@@ -111,10 +111,10 @@ docker run -d \
 docker run -d \
     -p <宿主机_服务端口>:2048 \
     -p <宿主机_流端口>:3120 \
-    -v "$(pwd)/auth_profiles":/app/auth_profiles \
+    -v "$(pwd)/../auth_profiles":/app/auth_profiles \
     # 可选: 如果您想使用自己的 SSL/TLS 证书，请取消下面一行的注释。
     # 请确保宿主机上的 'certs/' 目录存在，并且其中包含应用程序所需的证书文件。
-    # -v "$(pwd)/certs":/app/certs \
+    # -v "$(pwd)/../certs":/app/certs \
     -e PORT=8000 \
     -e DEFAULT_FASTAPI_PORT=2048 \
     -e DEFAULT_CAMOUFOX_PORT=9222 \
@@ -139,13 +139,13 @@ docker run -d \
     *   您需要将 `<宿主机_服务端口>` 替换为您希望在宿主机上用于访问此服务的实际端口号 (例如，如果您想通过宿主机的 `8080` 端口访问服务，则使用 `-p 8080:2048`)。
 *   `-p <宿主机_流端口>:3120`: 类似地，此参数将宿主机的某个端口映射到容器内部的 `3120` 端口，这是应用程序流服务在容器内监听的端口。
     *   您需要将 `<宿主机_流端口>` 替换为您希望在宿主机上用于访问流服务的实际端口号 (例如 `-p 8081:3120`)。
-*   `-v "$(pwd)/auth_profiles":/app/auth_profiles`: 卷挂载 (Volume mounting)。
+*   `-v "$(pwd)/../auth_profiles":/app/auth_profiles`: 卷挂载 (Volume mounting)。
     *   此参数将宿主机当前工作目录 (`$(pwd)`) 下的 `auth_profiles/` 目录挂载到容器内的 `/app/auth_profiles/` 目录。
     *   这样做的好处是：
         *   **持久化数据:** 即使容器被删除，`auth_profiles/` 中的数据仍保留在宿主机上。
         *   **方便配置:** 您可以直接在宿主机上修改 `auth_profiles/` 中的文件，更改会实时反映到容器中 (取决于应用程序如何读取这些文件)。
     *   **重要:** 在运行命令前，请确保宿主机上的 `auth_profiles/` 目录已存在。如果应用程序期望在此目录中找到特定的配置文件，请提前准备好。
-*   `# -v "$(pwd)/certs":/app/certs` (可选，已注释): 挂载自定义证书。
+*   `# -v "$(pwd)/../certs":/app/certs` (可选，已注释): 挂载自定义证书。
     *   如果您希望应用程序使用您自己的 SSL/TLS 证书而不是自动生成的证书，可以取消此行的注释。
     *   它会将宿主机当前工作目录下的 `certs/` 目录挂载到容器内的 `/app/certs/` 目录。
     *   **重要:** 如果启用此选项，请确保宿主机上的 `certs/` 目录存在，并且其中包含应用程序所需的证书文件 (通常是 `server.crt` 和 `server.key` 或类似名称的文件)。应用程序也需要被配置为从 `/app/certs/` 读取这些证书。

@@ -623,6 +623,7 @@ if __name__ == "__main__":
                 "addons": [],
                 # "proxy": camoufox_proxy_internal, # 已移除
                 "exclude_addons": [DefaultAddons.UBO], # Assuming DefaultAddons.UBO exists
+                "window": (1440, 900)
             }
 
             # 正确添加代理的方式
@@ -724,6 +725,39 @@ if __name__ == "__main__":
     logger.info(f"最终选择的启动模式: {final_launch_mode.replace('_', ' ')}模式")
     logger.info("-------------------------------------------------")
 
+    effective_active_auth_json_path = None # 提前初始化
+
+    # --- 交互式认证文件创建逻辑 ---
+    if final_launch_mode == 'debug' and not args.active_auth_json:
+        create_new_auth_choice = input_with_timeout(
+            "  是否要创建并保存新的认证文件? (y/n; 默认: n, 15s超时): ", 15
+        ).strip().lower()
+        if create_new_auth_choice == 'y':
+            new_auth_filename = ""
+            while not new_auth_filename:
+                new_auth_filename_input = input_with_timeout(
+                    f"  请输入要保存的文件名 (不含.json后缀, 字母/数字/-/_): ", args.auth_save_timeout
+                ).strip()
+                # 简单的合法性校验
+                if re.match(r"^[a-zA-Z0-9_-]+$", new_auth_filename_input):
+                    new_auth_filename = new_auth_filename_input
+                elif new_auth_filename_input == "":
+                    logger.info("输入为空或超时，取消创建新认证文件。")
+                    break
+                else:
+                    print("  文件名包含无效字符，请重试。")
+
+            if new_auth_filename:
+                args.auto_save_auth = True
+                args.save_auth_as = new_auth_filename
+                logger.info(f"  好的，登录成功后将自动保存认证文件为: {new_auth_filename}.json")
+                # 在这种模式下，不应该加载任何现有的认证文件
+                if effective_active_auth_json_path:
+                    logger.info("  由于将创建新的认证文件，已清除先前加载的认证文件设置。")
+                    effective_active_auth_json_path = None
+        else:
+            logger.info("  好的，将不创建新的认证文件。")
+
     if final_launch_mode == 'virtual_headless' and platform.system() == "Linux": # from dev
         logger.info("--- 检查 Xvfb (虚拟显示) 依赖 ---")
         if not shutil.which("Xvfb"):
@@ -769,7 +803,7 @@ if __name__ == "__main__":
 
     logger.info("--- 步骤 3: 准备并启动 Camoufox 内部进程 ---")
     captured_ws_endpoint = None
-    effective_active_auth_json_path = None # from dev
+    # effective_active_auth_json_path = None # from dev # 已提前
 
     if args.active_auth_json:
         logger.info(f"  尝试使用 --active-auth-json 参数提供的路径: '{args.active_auth_json}'")

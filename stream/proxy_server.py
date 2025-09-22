@@ -5,7 +5,6 @@ import logging
 import ssl
 import multiprocessing
 from pathlib import Path
-from urllib.parse import urlparse
 
 from stream.cert_manager import CertificateManager
 from stream.proxy_connector import ProxyConnector
@@ -100,11 +99,9 @@ class ProxyServer:
             loop = asyncio.get_running_loop()
             transport = writer.transport # This is the original client transport
 
-            if transport is None: # 新增检查块开始
+            if transport is None:
                 self.logger.warning(f"Client writer transport is None for {host}:{port} before TLS upgrade. Closing.")
-                # writer is likely already closed or in a bad state.
-                # We can't proceed with start_tls if transport is None.
-                return # Exit _handle_connect for this client # 新增检查块结束
+                return
 
             ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             ssl_context.load_cert_chain(
@@ -112,33 +109,25 @@ class ProxyServer:
                 keyfile=self.cert_manager.cert_dir / f"{host}.key"
             )
 
-            # 1. 正确获取与原始 transport 关联的协议实例
-            # 'transport' here is 'writer.transport' from line 101, now checked not to be None
             client_protocol = transport.get_protocol()
 
-            # 2. 将获取到的 client_protocol 实例传递给 start_tls
-            #    loop.start_tls 会修改这个 client_protocol 实例，使其与 new_transport 关联
             new_transport = await loop.start_tls(
                 transport=transport,
-                protocol=client_protocol,  # 关键：传递获取到的协议实例
+                protocol=client_protocol,
                 sslcontext=ssl_context,
                 server_side=True
             )
 
-            # 3. 增加对 new_transport 的 None 检查 (主要为了类型安全和 Pylance)
             if new_transport is None:
                 self.logger.error(f"loop.start_tls returned None for {host}:{port}, which is unexpected. Closing connection.")
-                # Ensure client writer is closed if it was opened or transport was valid before
                 writer.close()
-                # await writer.wait_closed() # Consider if waiting is necessary here
                 return
             
             client_reader = reader
 
-            # 4. 创建 StreamWriter 时，使用被 start_tls 正确更新过的 client_protocol
             client_writer = asyncio.StreamWriter(
-                transport=new_transport,    # 使用新的 TLS transport
-                protocol=client_protocol,   # 关键：使用被 start_tls 更新过的协议实例
+                transport=new_transport,
+                protocol=client_protocol,
                 reader=client_reader,
                 loop=loop
             )
@@ -156,9 +145,9 @@ class ProxyServer:
                     host
                 )
             except Exception as e:
-                # self.logger.error(f"Error connecting to server {host}:{port}: {e}")
+                # --- FIX: Log the unused exception variable ---
+                self.logger.error(f"Error connecting to server {host}:{port}: {e}")
                 client_writer.close()
-                # await client_writer.wait_closed()
         else:
             # No interception, just forward the connection
             writer.write(b'HTTP/1.1 200 Connection Established\r\n\r\n')
@@ -179,9 +168,10 @@ class ProxyServer:
                     server_reader, server_writer
                 )
             except Exception as e:
-                # self.logger.error(f"Error connecting to server {host}:{port}: {e}")
+                # --- FIX: Log the unused exception variable ---
+                self.logger.error(f"Error connecting to server {host}:{port}: {e}")
                 writer.close()
-                # await writer.wait_closed()
+
     async def _forward_data(self, client_reader, client_writer, server_reader, server_writer):
         """
         Forward data between client and server without interception
@@ -206,7 +196,6 @@ class ProxyServer:
         # Wait for both tasks to complete
         tasks = [client_to_server, server_to_client]
         await asyncio.gather(*tasks)
-        # await asyncio.gather(client_to_server, server_to_client)
     
     async def _forward_data_with_interception(self, client_reader, client_writer, 
                                              server_reader, server_writer, host):
@@ -276,7 +265,6 @@ class ProxyServer:
                 self.logger.error(f"Error processing client data: {e}")
             finally:
                 server_writer.close()
-                # await server_writer.wait_closed()
         
         # Parse HTTP headers from server
         async def _process_server_data():
@@ -319,18 +307,17 @@ class ProxyServer:
                                 if self.queue is not None:
                                     self.queue.put(json.dumps(resp))
                             except Exception as e:
-                                pass
+                                # --- FIX: Log the unused exception variable ---
+                                self.logger.error(f"Error during response interception: {e}")
 
                     # Not enough data to parse headers, forward as is
                     client_writer.write(data)
-                    # await client_writer.drain()
                     if b"0\r\n\r\n" in server_buffer:
                         server_buffer.clear()
             except Exception as e:
                 self.logger.error(f"Error processing server data: {e}")
             finally:
                 client_writer.close()
-                # await client_writer.wait_closed()
         
         # Create tasks for both directions
         client_to_server = asyncio.create_task(_process_client_data())
@@ -340,7 +327,6 @@ class ProxyServer:
         # Wait for both tasks to complete
         tasks = [client_to_server, server_to_client]
         await asyncio.gather(*tasks)
-        # await asyncio.gather(client_to_server, server_to_client)
     
     async def start(self):
         """
@@ -353,5 +339,13 @@ class ProxyServer:
         addr = server.sockets[0].getsockname()
         self.logger.info(f'Serving on {addr}')
         
+        # --- FIX: Send "READY" signal after server starts listening ---
+        if self.queue:
+            try:
+                self.queue.put("READY")
+                self.logger.info("Sent 'READY' signal to the main process.")
+            except Exception as e:
+                self.logger.error(f"Failed to send 'READY' signal: {e}")
+
         async with server:
             await server.serve_forever()

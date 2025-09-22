@@ -6,6 +6,7 @@ import asyncio
 import multiprocessing
 import os
 import sys
+import queue  # <-- FIX: Added missing import for queue.Empty
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -16,8 +17,8 @@ from starlette.types import ASGIApp
 from typing import Callable, Awaitable
 from playwright.async_api import Browser as AsyncBrowser, Playwright as AsyncPlaywright
 
-# --- 配置模块导入 ---
-from config import *
+# --- FIX: Replaced star import with explicit imports ---
+from config import NO_PROXY_ENV, EXCLUDED_MODELS_FILENAME
 
 # --- models模块导入 ---
 from models import WebSocketConnectionManager
@@ -116,7 +117,20 @@ async def _start_stream_proxy():
         server.STREAM_QUEUE = multiprocessing.Queue()
         server.STREAM_PROCESS = multiprocessing.Process(target=stream.start, args=(server.STREAM_QUEUE, port, STREAM_PROXY_SERVER_ENV))
         server.STREAM_PROCESS.start()
-        server.logger.info("STREAM proxy process started.")
+        server.logger.info("STREAM proxy process started. Waiting for 'READY' signal...")
+
+        # --- FIX: Wait for the proxy to be ready ---
+        try:
+            # Use asyncio.to_thread to wait for the blocking queue.get()
+            # Set a timeout to avoid waiting forever
+            ready_signal = await asyncio.to_thread(server.STREAM_QUEUE.get, timeout=15)
+            if ready_signal == "READY":
+                server.logger.info("✅ Received 'READY' signal from STREAM proxy.")
+            else:
+                server.logger.warning(f"Received unexpected signal from proxy: {ready_signal}")
+        except queue.Empty:
+            server.logger.error("❌ Timed out waiting for STREAM proxy to become ready. Startup will likely fail.")
+            raise RuntimeError("STREAM proxy failed to start in time.")
 
 async def _initialize_browser_and_page():
     import server
