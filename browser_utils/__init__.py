@@ -22,6 +22,7 @@ from .model_management import (
     _verify_and_apply_ui_state
 )
 from .script_manager import ScriptManager, script_manager
+from .page_controller import PageController
 
 __all__ = [
     # 初始化相关
@@ -52,5 +53,8 @@ __all__ = [
 
     # 脚本管理相关
     'ScriptManager',
-    'script_manager'
+    'script_manager',
+
+    # Page Controller
+    'PageController'
 ]
