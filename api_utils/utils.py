@@ -52,53 +52,133 @@ from .utils_ext import (
 
 
 # --- 提示准备函数 ---
-def prepare_combined_prompt(messages: List[Message], req_id: str, tools: Optional[List[Dict[str, Any]]] = None, tool_choice: Optional[Union[str, Dict[str, Any]]] = None) -> Tuple[str, List[str]]:
-    """准备组合提示"""
+def _clean_google_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """递归清洗 JSON Schema 以兼容 Google AI Studio。"""
+    if not isinstance(schema, dict):
+        return schema
+
+    clean = {}
+
+    # 复制允许的字段
+    allowed_fields = ['type', 'description', 'properties', 'items', 'enum', 'required', 'format']
+    for f in allowed_fields:
+        if f in schema:
+            clean[f] = schema[f]
+
+    # 强制类型检查
+    if 'type' in clean:
+        t = clean['type']
+        if isinstance(t, list):
+             # 兼容 OpenAI 的 nullable type: ["string", "null"] -> "string"
+             # 取第一个非 null 的类型
+             valid_types = [x for x in t if x != 'null']
+             if valid_types:
+                 clean['type'] = valid_types[0].lower()
+                 # 标记为 nullable，符合 Google Schema 规范
+                 if 'null' in t:
+                     clean['nullable'] = True
+             elif len(t) > 0:
+                 clean['type'] = t[0].lower()
+
+        elif isinstance(t, str):
+            clean['type'] = t.lower() # 确保小写
+
+        if clean['type'] == 'object':
+            if 'properties' not in clean:
+                clean['properties'] = {}
+            # 递归清洗属性
+            new_props = {}
+            for k, v in clean['properties'].items():
+                new_props[k] = _clean_google_schema(v)
+            clean['properties'] = new_props
+
+        elif clean['type'] == 'array':
+            if 'items' in clean:
+                clean['items'] = _clean_google_schema(clean['items'])
+            else:
+                # 数组必须有 items
+                clean['items'] = {"type": "string"}
+
+    return clean
+
+def _generate_google_function_schema(tools: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    生成 Google AI Studio 兼容的函数定义 JSON Schema。
+    严格遵循结构:
+    [
+      {
+        "name": "...",
+        "description": "...",
+        "parameters": { ... }
+      }
+    ]
+    """
+    if not tools:
+        return None
+
+    google_functions = []
+    for t in tools:
+        fn = t.get('function') if 'function' in t else t
+        if not isinstance(fn, dict):
+            continue
+
+        name = fn.get('name')
+        if not name:
+            continue
+
+        func_def = {
+            "name": name,
+            "description": fn.get('description', ''),
+        }
+
+        # Parameters handling
+        params = fn.get('parameters')
+        if params and isinstance(params, dict):
+             func_def['parameters'] = _clean_google_schema(params)
+        else:
+             # If no parameters, provide empty object schema
+             func_def['parameters'] = {"type": "object", "properties": {}}
+
+        google_functions.append(func_def)
+
+    if not google_functions:
+        return None
+
+    return json.dumps(google_functions, indent=2, ensure_ascii=False)
+
+def prepare_combined_prompt(messages: List[Message], req_id: str, tools: Optional[List[Dict[str, Any]]] = None, tool_choice: Optional[Union[str, Dict[str, Any]]] = None) -> Tuple[str, List[str], Optional[str]]:
+    """准备组合提示
+    Returns: (final_prompt, files_list, functions_json_str)
+    """
     from server import logger
-    
+
     logger.info(f"[{req_id}] (准备提示) 正在从 {len(messages)} 条消息准备组合提示 (包括历史)。")
     # 不在此处清空 upload_files；由上层在每次请求开始时按需清理，避免历史附件丢失导致“文件不存在”错误。
-    
+
     combined_parts = []
     system_prompt_content: Optional[str] = None
     processed_system_message_indices = set()
     files_list: List[str] = []  # 收集需要上传的本地文件路径（图片、视频、PDF等）
+    functions_json_str: Optional[str] = None
 
-    # 若声明了可用工具，先在提示前注入工具目录，帮助模型知晓可用函数（内部适配，不影响外部协议）
+    # 处理工具定义：转换为 Google AI Studio JSON 格式，而不是注入到文本提示中
     if isinstance(tools, list) and len(tools) > 0:
         try:
-            tool_lines: List[str] = ["可用工具目录:"]
-            for t in tools:
-                name = None
-                params_schema = None
-                if isinstance(t, dict):
-                    fn = t.get('function') if 'function' in t else t
-                    if isinstance(fn, dict):
-                        name = fn.get('name') or t.get('name')
-                        params_schema = fn.get('parameters')
-                    else:
-                        name = t.get('name')
-                if name:
-                    tool_lines.append(f"- 函数: {name}")
-                    if params_schema:
-                        try:
-                            tool_lines.append(f"  参数模式: {json.dumps(params_schema, ensure_ascii=False)}")
-                        except Exception:
-                            pass
-            if tool_choice:
-                # 明确要求或提示可调用的函数名
-                chosen_name = None
-                if isinstance(tool_choice, dict):
-                    fn = tool_choice.get('function') if tool_choice else None
-                    if isinstance(fn, dict):
-                        chosen_name = fn.get('name')
-                elif isinstance(tool_choice, str) and tool_choice.lower() not in ('auto', 'none', 'no', 'off', 'required', 'any'):
-                    chosen_name = tool_choice
-                if chosen_name:
-                    tool_lines.append(f"建议优先使用函数: {chosen_name}")
-            combined_parts.append("\n".join(tool_lines) + "\n---\n")
-        except Exception:
-            pass
+            # 检查是否强制禁用了工具
+            should_use_tools = True
+            if isinstance(tool_choice, str) and tool_choice.lower() in ('none', 'no', 'off'):
+                should_use_tools = False
+            elif isinstance(tool_choice, dict) and tool_choice.get('type') == 'function' and not tool_choice.get('function'):
+                 should_use_tools = False
+
+            if should_use_tools:
+                functions_json_str = _generate_google_function_schema(tools)
+                if functions_json_str:
+                    logger.info(f"[{req_id}] (准备提示) 已生成 Google 格式工具定义 JSON。")
+
+        except Exception as e:
+            logger.error(f"[{req_id}] (准备提示) 处理工具定义时出错: {e}")
+            # 出错时回退到旧逻辑？不，这会破坏计划。保持 None。
 
     # 处理系统消息
     for i, msg in enumerate(messages):
@@ -425,9 +505,9 @@ def prepare_combined_prompt(messages: List[Message], req_id: str, tools: Optiona
         final_prompt += "\n"
     
     preview_text = final_prompt[:300].replace('\n', '\\n')
-    logger.info(f"[{req_id}] (准备提示) 组合提示长度: {len(final_prompt)}，附件数量: {len(files_list)}。预览: '{preview_text}...'")
-    
-    return final_prompt, files_list
+    logger.info(f"[{req_id}] (准备提示) 组合提示长度: {len(final_prompt)}，附件数量: {len(files_list)}，工具定义: {'有' if functions_json_str else '无'}。预览: '{preview_text}...'")
+
+    return final_prompt, files_list, functions_json_str
 
 
 def _extract_json_from_text(text: str) -> Optional[str]:
@@ -503,14 +583,21 @@ async def maybe_execute_tools(messages: List[Message], tools: Optional[List[Dict
             # 不主动执行
             return None
 
-        if not chosen_name:
-            return None
+        # 禁用基于 "auto" + 单一工具的自动执行逻辑
+        # 原因：这是一个代理服务，不应代表用户在第一次交互时就推断参数并执行工具。
+        # 用户发送 "make a single tool call" 期望模型返回 tool_calls，而不是代理尝试执行它。
+        # 原有逻辑会导致错误参数（空json）被执行，并将错误结果注入提示。
 
-        user_text = _get_latest_user_text(messages)
-        args_json = _extract_json_from_text(user_text) or '{}'
-        import asyncio
-        result_str = await execute_tool_call(chosen_name, args_json)
-        return [{"name": chosen_name, "arguments": args_json, "result": result_str}]
+        # if not chosen_name:
+        #     return None
+
+        # user_text = _get_latest_user_text(messages)
+        # args_json = _extract_json_from_text(user_text) or '{}'
+        # import asyncio
+        # result_str = await execute_tool_call(chosen_name, args_json)
+        # return [{"name": chosen_name, "arguments": args_json, "result": result_str}]
+
+        return None
     except Exception:
         return None
 

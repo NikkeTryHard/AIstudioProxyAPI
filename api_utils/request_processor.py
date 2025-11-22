@@ -8,7 +8,7 @@ import json
 import os
 import random
 import time
-from typing import Optional, Tuple, Callable, AsyncGenerator, List, Any
+from typing import Optional, Tuple, Callable, AsyncGenerator, List, Any, Dict
 from asyncio import Event, Future
 
 from fastapi import HTTPException, Request
@@ -113,14 +113,14 @@ async def _prepare_and_validate_request(
     req_id: str,
     request: ChatCompletionRequest,
     check_client_disconnected: Callable,
-) -> Tuple[str, List[Optional[str]]]:
-    """准备和验证请求，返回 (组合提示, 图片路径列表)。"""
+) -> Tuple[str, List[Optional[str]], Optional[str]]:
+    """准备和验证请求，返回 (组合提示, 图片路径列表, 函数定义JSON)。"""
     try:
         validate_chat_request(request.messages, req_id)
     except ValueError as e:
         raise bad_request(req_id, f"无效请求: {e}")
-    
-    prepared_prompt, images_list = prepare_combined_prompt(request.messages, req_id, getattr(request, 'tools', None), getattr(request, 'tool_choice', None))
+
+    prepared_prompt, images_list, functions_json = prepare_combined_prompt(request.messages, req_id, getattr(request, 'tools', None), getattr(request, 'tool_choice', None))
     # 基于 tools/tool_choice 的主动函数执行（支持 per-request MCP 端点）
     try:
         # 将 mcp_endpoint 注入 utils.maybe_execute_tools 的注册逻辑
@@ -185,7 +185,7 @@ async def _prepare_and_validate_request(
     except Exception:
         pass
 
-    return prepared_prompt, images_list
+    return prepared_prompt, images_list, functions_json
 
 async def _handle_response_processing(
     req_id: str,
@@ -243,14 +243,16 @@ async def _handle_auxiliary_stream_response(
                 current_ai_studio_model_id or MODEL_NAME,
                 check_client_disconnected,
                 completion_event,
+                page=context['page'],
+                logger=logger
             )
             if not result_future.done():
                 result_future.set_result(StreamingResponse(stream_gen_func, media_type="text/event-stream"))
             else:
                 if not completion_event.is_set():
                     completion_event.set()
-            
-            return completion_event, submit_button_locator, check_client_disconnected
+
+            return completion_event, submit_button_locator, check_client_disconnected, False
 
         except Exception as e:
             logger.error(f"[{req_id}] 从队列获取流式数据时出错: {e}", exc_info=True)
@@ -265,9 +267,9 @@ async def _handle_auxiliary_stream_response(
         final_data_from_aux_stream = None
 
         # 非流式：消费辅助队列的最终结果并组装 JSON 响应
-        async for raw_data in use_stream_response(req_id):
+        async for raw_data in use_stream_response(req_id, page=context['page']):
             check_client_disconnected(f"非流式辅助流 - 循环中 ({req_id}): ")
-            
+
             # 确保 data 是字典类型
             if isinstance(raw_data, str):
                 try:
@@ -343,11 +345,77 @@ async def _handle_auxiliary_stream_response(
 
         if not result_future.done():
             result_future.set_result(JSONResponse(content=response_payload))
+        return None, None, None, (finish_reason_val == "tool_calls")
+
+
+def _try_parse_tool_calls(content: str) -> Optional[List[Dict[str, Any]]]:
+    """尝试从内容中解析工具调用 JSON。"""
+    if not content:
         return None
 
+    clean_text = content.strip()
+    # 处理 markdown 代码块
+    if clean_text.startswith("```json"):
+        clean_text = clean_text[7:]
+    elif clean_text.startswith("```"):
+        clean_text = clean_text[3:]
 
-async def _handle_playwright_response(req_id: str, request: ChatCompletionRequest, page: AsyncPage, 
-                                    context: dict, result_future: Future, submit_button_locator: Locator, 
+    if clean_text.endswith("```"):
+        clean_text = clean_text[:-3]
+
+    clean_text = clean_text.strip()
+
+    try:
+        data = json.loads(clean_text)
+        tool_calls = []
+
+        # 它可以是一个列表
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and ("name" in item or "function_name" in item):
+                     # 转换为 OpenAI tool_call 格式
+                     # 假设 item 是 {"name": "...", "arguments": {...}}
+                     # 或者 {"function": "...", "parameters": ...}
+                     # 我们需要生成一个随机 id
+                     fn_name = item.get("name") or item.get("function_name")
+                     fn_args = item.get("arguments") or item.get("parameters") or item.get("args") or {}
+
+                     if isinstance(fn_args, dict):
+                         fn_args = json.dumps(fn_args)
+
+                     tool_calls.append({
+                         "id": f"call_{_random_id()}",
+                         "type": "function",
+                         "function": {
+                             "name": fn_name,
+                             "arguments": str(fn_args)
+                         }
+                     })
+
+        # 或者是一个单独的对象
+        elif isinstance(data, dict):
+             # Google AI Studio 可能会返回单个对象
+             if "name" in data or "function_name" in data:
+                 fn_name = data.get("name") or data.get("function_name")
+                 fn_args = data.get("arguments") or data.get("parameters") or data.get("args") or {}
+                 if isinstance(fn_args, dict):
+                     fn_args = json.dumps(fn_args)
+
+                 tool_calls.append({
+                     "id": f"call_{_random_id()}",
+                     "type": "function",
+                     "function": {
+                         "name": fn_name,
+                         "arguments": str(fn_args)
+                     }
+                 })
+
+        return tool_calls if tool_calls else None
+    except json.JSONDecodeError:
+        return None
+
+async def _handle_playwright_response(req_id: str, request: ChatCompletionRequest, page: AsyncPage,
+                                    context: dict, result_future: Future, submit_button_locator: Locator,
                                     check_client_disconnected: Callable) -> Optional[Tuple[Event, Locator, Callable]]:
     """使用Playwright处理响应"""
     from server import logger
@@ -372,13 +440,16 @@ async def _handle_playwright_response(req_id: str, request: ChatCompletionReques
         )
         if not result_future.done():
             result_future.set_result(StreamingResponse(stream_gen_func, media_type="text/event-stream"))
-        
-        return completion_event, submit_button_locator, check_client_disconnected
+
+        return completion_event, submit_button_locator, check_client_disconnected, False
     else:
         # 使用PageController获取响应
         page_controller = PageController(page, logger, req_id)
         final_content = await page_controller.get_response(check_client_disconnected)
-        
+
+        # 尝试解析工具调用
+        tool_calls = _try_parse_tool_calls(final_content)
+
         # 计算token使用统计
         usage_stats = calculate_usage_stats(
             [msg.model_dump() for msg in request.messages],
@@ -389,8 +460,15 @@ async def _handle_playwright_response(req_id: str, request: ChatCompletionReques
 
         # 统一使用构造器生成 OpenAI 兼容响应
         model_name_for_json = current_ai_studio_model_id or MODEL_NAME
-        message_payload = {"role": "assistant", "content": final_content}
-        finish_reason_val = "stop"
+
+        if tool_calls:
+            message_payload = {"role": "assistant", "content": None, "tool_calls": tool_calls}
+            finish_reason_val = "tool_calls"
+            logger.info(f"[{req_id}] ✅ 检测到工具调用响应，已转换格式。")
+        else:
+            message_payload = {"role": "assistant", "content": final_content}
+            finish_reason_val = "stop"
+
         response_payload = build_chat_completion_response_json(
             req_id,
             model_name_for_json,
@@ -404,8 +482,8 @@ async def _handle_playwright_response(req_id: str, request: ChatCompletionReques
         
         if not result_future.done():
             result_future.set_result(JSONResponse(content=response_payload))
-        
-        return None
+
+        return None, None, None, (finish_reason_val == "tool_calls")
 
 
 async def _cleanup_request_resources(req_id: str, disconnect_check_task: Optional[asyncio.Task], 
@@ -489,8 +567,8 @@ async def _process_request_refactored(
 
         await _handle_model_switching(req_id, context, check_client_disconnected)
         await _handle_parameter_cache(req_id, context)
-        
-        prepared_prompt,image_list = await _prepare_and_validate_request(req_id, request, check_client_disconnected)
+
+        prepared_prompt, image_list, functions_json = await _prepare_and_validate_request(req_id, request, check_client_disconnected)
         # 额外合并顶层与消息级 attachments/files（兼容历史记录）已在下方处理；此处确保路径存在
         try:
             import os
@@ -577,17 +655,43 @@ async def _process_request_refactored(
         # 优化：在提交提示前再次检查客户端连接，避免不必要的后台请求
         check_client_disconnected("提交提示前最终检查")
 
-        await page_controller.submit_prompt(prepared_prompt,image_list, check_client_disconnected)
-        
+        # 检查是否有待提交的工具结果（来自 User 消息流中的 tool 消息）
+        pending_tool_outputs = []
+        if request.messages and request.messages[-1].role == 'tool':
+            # 收集末尾连续的 tool 消息
+            for msg in reversed(request.messages):
+                if msg.role == 'tool':
+                    # 假设 tool_call_id 映射不是严格必须的，或者我们只提交 output
+                    # Google AI Studio 可能按顺序匹配？
+                    # msg.content 是 result
+                    pending_tool_outputs.insert(0, {"tool_call_id": getattr(msg, 'tool_call_id', None), "output": msg.content})
+                else:
+                    break
+
+        if pending_tool_outputs:
+            # 这是一个工具结果提交请求
+            # 1. 确保函数定义已注入（如果需要）
+            if functions_json:
+                await page_controller.inject_functions(functions_json)
+
+            # 2. 提交工具结果
+            await page_controller.submit_tool_outputs(pending_tool_outputs, check_client_disconnected)
+
+            # 3. 不再调用 submit_prompt，因为我们已经通过 submit_tool_outputs 触发了后续生成
+            # (除非 submit_tool_outputs 失败或不触发生成，但通常会触发)
+        else:
+            # 常规用户提示提交
+            await page_controller.submit_prompt(prepared_prompt, image_list, functions_json, check_client_disconnected)
+
         # 响应处理仍然需要在这里，因为它决定了是流式还是非流式，并设置future
         response_result = await _handle_response_processing(
             req_id, request, page, context, result_future, submit_button_locator, check_client_disconnected
         )
-        
+
         if response_result:
-            completion_event, _, _ = response_result
-        
-        return completion_event, submit_button_locator, check_client_disconnected
+            return response_result
+
+        return None, None, None, False
         
     except ClientDisconnectedError as disco_err:
         context['logger'].info(f"[{req_id}] 捕获到客户端断开连接信号: {disco_err}")

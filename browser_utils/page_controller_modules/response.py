@@ -67,6 +67,21 @@ class ResponseController(BaseController):
                 # 不抛出异常，返回空内容让上层处理
                 return ""
 
+            # --- DEBUG: Check for function call and sleep ---
+            import json
+            try:
+                if final_content and final_content.strip().startswith('{'):
+                    data = json.loads(final_content)
+                    if isinstance(data, dict) and "name" in data and "arguments" in data:
+                        print(f"\n[DEBUG] Detected Function Call in response.py!")
+                        print(f"[DEBUG] Content: {final_content[:200]}...")
+                        print(f"[DEBUG] Sleeping 10s for inspection...")
+                        await asyncio.sleep(10)
+                        print(f"[DEBUG] Sleep finished.")
+            except Exception:
+                pass
+            # ------------------------------------------------
+
             self.logger.info(f"[{self.req_id}] ✅ 成功获取响应内容 ({len(final_content)} chars)")
             return final_content
 
