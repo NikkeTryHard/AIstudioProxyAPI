@@ -75,3 +75,8 @@ THINKING_LEVEL_OPTION_HIGH_SELECTOR = '[role="listbox"][aria-label="Thinking Lev
 GROUNDING_WITH_GOOGLE_SEARCH_TOGGLE_SELECTOR = (
     'div[data-test-id="searchAsAToolTooltip"] mat-slide-toggle button'
 )
+
+# --- Function Calling ---
+FUNCTION_CALLING_TOGGLE_SELECTOR = (
+    'div[data-test-id="functionCallingTooltip"] mat-slide-toggle button, mat-slide-toggle:has-text("Function calling") button'
+)

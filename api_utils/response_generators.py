@@ -284,16 +284,7 @@ async def gen_sse_from_aux_stream(
                                 }
                                 yield f"data: {json.dumps(output, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
-                                # DEBUG: Log function call content and sleep for 10s
-                                # Using logger instead of print to ensure visibility
-                                logger.warning(f"[{req_id}] [DEBUG] Function Call Detected via DOM Fallback (Stream):")
-                                logger.warning(json.dumps(tool_calls_list, indent=2, ensure_ascii=False))
-                                logger.warning(f"[{req_id}] [DEBUG] Sleeping 10 seconds for inspection...")
-                                await asyncio.sleep(10)
-                                logger.warning(f"[{req_id}] [DEBUG] Stream fallback inspection sleep finished.")
-
-                                # Important: Since we found function calls via DOM fallback, we consider this stream FINISHED.
-                                # We break out of the main loop, which will trigger the finally block to send [DONE].
+                                # Found function calls via DOM fallback, finish stream
                                 break
 
                             except Exception as parse_err:
