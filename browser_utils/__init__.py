@@ -23,6 +23,13 @@ from .model_management import (
 )
 from .script_manager import ScriptManager, script_manager
 from .page_controller import PageController
+from .debug_utils import (
+    save_comprehensive_snapshot,
+    save_error_snapshot_legacy,
+    get_texas_timestamp,
+    capture_dom_structure,
+    capture_playwright_state
+)
 
 __all__ = [
     # 初始化相关
@@ -56,5 +63,12 @@ __all__ = [
     'script_manager',
 
     # Page Controller
-    'PageController'
+    'PageController',
+
+    # Debug utilities (comprehensive error snapshots)
+    'save_comprehensive_snapshot',
+    'save_error_snapshot_legacy',
+    'get_texas_timestamp',
+    'capture_dom_structure',
+    'capture_playwright_state'
 ]
