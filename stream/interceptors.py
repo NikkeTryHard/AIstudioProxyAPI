@@ -91,14 +91,16 @@ class HttpInterceptor:
                 continue
 
             if len(payload)==2: # body
-                resp["body"] = resp["body"] + payload[1]
-            elif len(payload) == 11 and payload[1] is None and type(payload[10]) == list:  # function
+                if payload[1] is not None:
+                    resp["body"] = resp["body"] + str(payload[1])
+            elif len(payload) == 11 and payload[1] is None and isinstance(payload[10], list):  # function
                 array_tool_calls = payload[10]
                 func_name = array_tool_calls[0]
                 params = self.parse_toolcall_params(array_tool_calls[1])
                 resp["function"].append({"name":func_name, "params":params})
             elif len(payload) > 2: # reason
-                resp["reason"] = resp["reason"] + payload[1]
+                if payload[1] is not None:
+                    resp["reason"] = resp["reason"] + str(payload[1])
 
         return resp
 
