@@ -18,6 +18,7 @@ from config import (
     ENABLE_URL_CONTEXT,
     USE_URL_CONTEXT_SELECTOR,
     GROUNDING_WITH_GOOGLE_SEARCH_TOGGLE_SELECTOR,
+    FUNCTION_CALLING_TOGGLE_SELECTOR,
     ENABLE_GOOGLE_SEARCH,
     CLICK_TIMEOUT_MS,
 )
@@ -99,8 +100,158 @@ class ParameterController(BaseController):
         if hasattr(self, '_handle_thinking_budget'):
              await self._handle_thinking_budget(request_params, model_id_to_use, check_client_disconnected)
 
-        # 调整 Google Search 开关
-        await self._adjust_google_search(request_params, check_client_disconnected)
+        # 调整“思考预算” - handled by ThinkingController but called here to maintain flow?
+        # Ideally adjust_parameters should coordinate, but if we split, we need to ensure method availability.
+        # We will assume the final class inherits from all mixins.
+        if hasattr(self, '_handle_thinking_budget'):
+             await self._handle_thinking_budget(request_params, model_id_to_use, check_client_disconnected)
+
+        # 综合调整 Function Calling 和 Google Search 开关
+        # 优化逻辑：避免无效切换，优先处理冲突
+        await self._adjust_tools_configuration(request_params, check_client_disconnected)
+
+    async def _adjust_tools_configuration(
+        self, request_params: Dict[str, Any], check_client_disconnected: Callable
+    ):
+        """
+        综合调整 Function Calling 和 Google Search 开关。
+        逻辑：
+        1. 确定需求: need_fc (Function Calling), need_gs (Google Search)
+        2. 如果需要 FC:
+           a. 强制关闭 GS (如果开启)。(防止 FC 开启后 GS 变灰无法操作，且通常互斥)
+           b. 开启 FC。
+        3. 如果不需要 FC:
+           a. 关闭 FC。(这将重新激活 GS 开关)
+           b. 根据 need_gs 调整 GS (开启或关闭)。
+        """
+        need_fc = self._should_enable_function_calling(request_params)
+        need_gs = self._should_enable_google_search(request_params)
+
+        self.logger.info(f"[{self.req_id}] 工具配置调整 - 需求: FC={need_fc}, GS={need_gs}")
+
+        if need_fc:
+            # 场景 1: 需要 Function Calling
+            # 步骤 A: 确保 Google Search 关闭
+            await self._set_google_search_state(False, check_client_disconnected, force_action=True)
+
+            # 步骤 B: 确保 Function Calling 开启
+            await self._set_function_calling_state(True, check_client_disconnected)
+        else:
+            # 场景 2: 不需要 Function Calling
+            # 步骤 A: 确保 Function Calling 关闭 (这也将解锁 Google Search 开关)
+            await self._set_function_calling_state(False, check_client_disconnected)
+
+            # 步骤 B: 根据需求调整 Google Search
+            await self._set_google_search_state(need_gs, check_client_disconnected)
+
+    async def _set_function_calling_state(self, should_enable: bool, check_client_disconnected: Callable):
+        """设置 Function Calling 开关状态"""
+        toggle_selector = FUNCTION_CALLING_TOGGLE_SELECTOR
+        try:
+            # 检查可见性
+            try:
+                toggle_locator = self.page.locator(toggle_selector).first
+                if not await toggle_locator.is_visible(timeout=3000):
+                    self.logger.info(f"[{self.req_id}] (FC) 未找到可见的 Function Calling 开关，跳过。")
+                    return
+            except Exception:
+                return
+
+            if not await toggle_locator.is_enabled():
+                self.logger.warning(f"[{self.req_id}] (FC) 开关在 UI 中禁用，跳过。")
+                return
+
+            is_checked_str = await toggle_locator.get_attribute("aria-checked")
+            is_currently_checked = is_checked_str == "true"
+
+            need_change = should_enable != is_currently_checked
+            self.logger.info(f"[{self.req_id}] (FC) 状态检查 - 当前: {is_currently_checked}, 期望: {should_enable}, 需要变更: {need_change}")
+
+            if need_change:
+                action = "打开" if should_enable else "关闭"
+                self.logger.info(f"[{self.req_id}] (FC) 正在点击以{action}...")
+                try:
+                    await toggle_locator.scroll_into_view_if_needed()
+                except Exception:
+                    pass
+                await toggle_locator.click(timeout=CLICK_TIMEOUT_MS)
+                await self._check_disconnect(check_client_disconnected, f"Function Calling - 点击{action}后")
+                await asyncio.sleep(0.5)
+
+                new_state = await toggle_locator.get_attribute("aria-checked")
+                success = (new_state == "true") == should_enable
+                if success:
+                    self.logger.info(f"[{self.req_id}] (FC) ✅ 成功{action}。")
+                else:
+                    self.logger.warning(f"[{self.req_id}] (FC) ⚠️ {action}失败。当前状态: '{new_state}'")
+            else:
+                self.logger.info(f"[{self.req_id}] (FC) 状态已符合期望，无需操作。")
+
+        except Exception as e:
+            self.logger.error(f"[{self.req_id}] (FC) 操作出错: {e}")
+            if isinstance(e, ClientDisconnectedError):
+                raise
+
+    async def _set_google_search_state(self, should_enable: bool, check_client_disconnected: Callable, force_action: bool = False):
+        """设置 Google Search 开关状态"""
+        toggle_selector = GROUNDING_WITH_GOOGLE_SEARCH_TOGGLE_SELECTOR
+        try:
+            toggle_locator = self.page.locator(toggle_selector)
+            if not await toggle_locator.is_visible(timeout=5000):
+                 self.logger.warning(f"[{self.req_id}] (GS) 开关未找到/不可见。")
+                 return
+
+            # 如果强制操作且被禁用，可能无法操作，但我们记录日志
+            if not await toggle_locator.is_enabled():
+                if force_action and not should_enable:
+                     # 如果我们想关闭它，但它被禁用，检查它是否已经是关闭的
+                     is_checked_str = await toggle_locator.get_attribute("aria-checked")
+                     if is_checked_str == "false":
+                         self.logger.info(f"[{self.req_id}] (GS) 开关禁用但已关闭，符合期望。")
+                         return
+                     else:
+                         self.logger.warning(f"[{self.req_id}] (GS) 开关禁用且开启，无法强制关闭！")
+                         return
+
+                self.logger.warning(f"[{self.req_id}] (GS) 开关在 UI 中禁用，跳过。")
+                return
+
+            is_checked_str = await toggle_locator.get_attribute("aria-checked")
+            is_currently_checked = is_checked_str == "true"
+
+            need_change = should_enable != is_currently_checked
+
+            # 如果只是为了"确保关闭"且本来就是关闭的，日志级别可以低一点
+            if force_action and not should_enable and not is_currently_checked:
+                 self.logger.info(f"[{self.req_id}] (GS) 已处于关闭状态 (Pre-check)。")
+                 return
+
+            self.logger.info(f"[{self.req_id}] (GS) 状态检查 - 当前: {is_currently_checked}, 期望: {should_enable}, 需要变更: {need_change}")
+
+            if need_change:
+                action = "打开" if should_enable else "关闭"
+                self.logger.info(f"[{self.req_id}] (GS) 正在点击以{action}...")
+                try:
+                    await toggle_locator.scroll_into_view_if_needed()
+                except Exception:
+                    pass
+                await toggle_locator.click(timeout=CLICK_TIMEOUT_MS)
+                await self._check_disconnect(check_client_disconnected, f"Google Search - 点击{action}后")
+                await asyncio.sleep(0.5)
+
+                new_state = await toggle_locator.get_attribute("aria-checked")
+                success = (new_state == "true") == should_enable
+                if success:
+                    self.logger.info(f"[{self.req_id}] (GS) ✅ 成功{action}。")
+                else:
+                    self.logger.warning(f"[{self.req_id}] (GS) ⚠️ {action}失败。当前状态: '{new_state}'")
+            else:
+                self.logger.info(f"[{self.req_id}] (GS) 状态已符合期望，无需操作。")
+
+        except Exception as e:
+            self.logger.error(f"[{self.req_id}] (GS) 操作出错: {e}")
+            if isinstance(e, ClientDisconnectedError):
+                raise
 
     async def _adjust_temperature(
         self,
@@ -527,56 +678,34 @@ class ParameterController(BaseController):
             )
             return ENABLE_GOOGLE_SEARCH
 
-    async def _adjust_google_search(
-        self, request_params: Dict[str, Any], check_client_disconnected: Callable
-    ):
-        """根据请求参数或默认配置，双向控制 Google Search 开关。"""
-        self.logger.info(f"[{self.req_id}] 检查并调整 Google Search 开关...")
+    def _should_enable_function_calling(self, request_params: Dict[str, Any]) -> bool:
+        """根据请求参数决定是否应启用 Function Calling。"""
+        if "tools" in request_params and request_params.get("tools") is not None:
+            tools = request_params.get("tools")
+            has_function_tool = False
+            if isinstance(tools, list):
+                for tool in tools:
+                    if isinstance(tool, dict):
+                        # 1. 标准 OpenAI 格式: {"type": "function", "function": {...}}
+                        if tool.get("type") == "function":
+                            func_name = tool.get("function", {}).get("name")
+                            if func_name != "googleSearch":
+                                has_function_tool = True
+                                break
 
-        should_enable_search = self._should_enable_google_search(request_params)
+                        # 2. 简化格式/其他格式: 直接包含 {"name":..., "parameters":...}
+                        # 只要不是 Google Search，且看起来像函数，就认为是
+                        # 注意: google_search_retrieval 是 Google Search 的一种标记
+                        elif tool.get("google_search_retrieval") is None:
+                            # 如果没有明确标记为 Google Search
+                            # 且具有 name 属性 (可能是函数名)
+                            possible_name = tool.get("name") or tool.get("function", {}).get("name")
+                            if possible_name and possible_name != "googleSearch":
+                                has_function_tool = True
+                                break
 
-        toggle_selector = GROUNDING_WITH_GOOGLE_SEARCH_TOGGLE_SELECTOR
-
-        try:
-            toggle_locator = self.page.locator(toggle_selector)
-            await expect_async(toggle_locator).to_be_visible(timeout=5000)
-            await self._check_disconnect(
-                check_client_disconnected, "Google Search 开关 - 元素可见后"
-            )
-
-            is_checked_str = await toggle_locator.get_attribute("aria-checked")
-            is_currently_checked = is_checked_str == "true"
             self.logger.info(
-                f"[{self.req_id}] Google Search 开关当前状态: '{is_checked_str}'。期望状态: {should_enable_search}"
+                f"[{self.req_id}] 请求中包含 'tools' 参数。检测到 Function Calling 工具: {has_function_tool}。"
             )
-
-            if should_enable_search != is_currently_checked:
-                action = "打开" if should_enable_search else "关闭"
-                self.logger.info(
-                    f"[{self.req_id}] Google Search 开关状态与期望不符。正在点击以{action}..."
-                )
-                try:
-                    await toggle_locator.scroll_into_view_if_needed()
-                except Exception:
-                    pass
-                await toggle_locator.click(timeout=CLICK_TIMEOUT_MS)
-                await self._check_disconnect(
-                    check_client_disconnected, f"Google Search 开关 - 点击{action}后"
-                )
-                await asyncio.sleep(0.5)  # 等待UI更新
-                new_state = await toggle_locator.get_attribute("aria-checked")
-                if (new_state == "true") == should_enable_search:
-                    self.logger.info(f"[{self.req_id}] ✅ Google Search 开关已成功{action}。")
-                else:
-                    self.logger.warning(
-                        f"[{self.req_id}] ⚠️ Google Search 开关{action}失败。当前状态: '{new_state}'"
-                    )
-            else:
-                self.logger.info(f"[{self.req_id}] Google Search 开关已处于期望状态，无需操作。")
-
-        except Exception as e:
-            self.logger.error(
-                f"[{self.req_id}] ❌ 操作 'Google Search toggle' 开关时发生错误: {e}"
-            )
-            if isinstance(e, ClientDisconnectedError):
-                raise
+            return has_function_tool
+        return False

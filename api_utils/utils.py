@@ -194,10 +194,10 @@ def prepare_combined_prompt(messages: List[Message], req_id: str, tools: Optiona
                 logger.info(f"[{req_id}] (准备提示) 在索引 {i} 忽略非字符串或空的系统消息。")
                 processed_system_message_indices.add(i)
             break
-    
-    role_map_ui = {"user": "用户", "assistant": "助手", "system": "系统", "tool": "工具"}
+
+    role_map_ui = {"user": "User", "assistant": "Model", "system": "System", "tool": "Tool"}
     turn_separator = "\n---\n"
-    
+
     # 处理其他消息
     for i, msg in enumerate(messages):
         if i in processed_system_message_indices:
@@ -255,7 +255,7 @@ def prepare_combined_prompt(messages: List[Message], req_id: str, tools: Optiona
                             try:
                                 detail_val = getattr(item.image_url, 'detail', None)
                                 if detail_val:
-                                    text_parts.append(f"[图像细节: detail={detail_val}]")
+                                    text_parts.append(f"[Image Detail: detail={detail_val}]")
                             except Exception:
                                 pass
                         elif hasattr(item, 'input_image') and item.input_image:
@@ -263,7 +263,7 @@ def prepare_combined_prompt(messages: List[Message], req_id: str, tools: Optiona
                             try:
                                 detail_val = getattr(item.input_image, 'detail', None)
                                 if detail_val:
-                                    text_parts.append(f"[图像细节: detail={detail_val}]")
+                                    text_parts.append(f"[Image Detail: detail={detail_val}]")
                             except Exception:
                                 pass
                         elif hasattr(item, 'file_url') and item.file_url:
@@ -446,24 +446,24 @@ def prepare_combined_prompt(messages: List[Message], req_id: str, tools: Optiona
         if role == 'assistant' and tool_calls:
             if content_str:
                 current_turn_parts.append("\n")
-            
+
             tool_call_visualizations = []
             for tool_call in tool_calls:
                 if hasattr(tool_call, 'type') and tool_call.type == 'function':
                     function_call = tool_call.function
                     func_name = function_call.name if function_call else None
                     func_args_str = function_call.arguments if function_call else None
-                    
+
                     try:
                         parsed_args = json.loads(func_args_str if func_args_str else '{}')
                         formatted_args = json.dumps(parsed_args, indent=2, ensure_ascii=False)
                     except (json.JSONDecodeError, TypeError):
                         formatted_args = func_args_str if func_args_str is not None else "{}"
-                    
+
                     tool_call_visualizations.append(
-                        f"请求调用函数: {func_name}\n参数:\n{formatted_args}"
+                        f"Request to call function: {func_name}\nArguments:\n{formatted_args}"
                     )
-            
+
             if tool_call_visualizations:
                 current_turn_parts.append("\n".join(tool_call_visualizations))
 
@@ -473,9 +473,16 @@ def prepare_combined_prompt(messages: List[Message], req_id: str, tools: Optiona
             # 标准 OpenAI 样式：content 为字符串，tool_call_id 关联上一轮调用
             tool_call_id = getattr(msg, 'tool_call_id', None)
             if tool_call_id:
-                tool_result_lines.append(f"工具结果 (tool_call_id={tool_call_id}):")
+                tool_result_lines.append(f"Tool Result (tool_call_id={tool_call_id}):")
             if isinstance(msg.content, str):
-                tool_result_lines.append(msg.content)
+                content_str = msg.content
+                try:
+                    # 尝试格式化 JSON 结果以提高可读性
+                    parsed_res = json.loads(content_str)
+                    formatted_res = json.dumps(parsed_res, indent=2, ensure_ascii=False)
+                    tool_result_lines.append(formatted_res)
+                except (json.JSONDecodeError, TypeError):
+                    tool_result_lines.append(content_str)
             elif isinstance(msg.content, list):
                 # 兼容少数客户端把结果装在列表里
                 try:

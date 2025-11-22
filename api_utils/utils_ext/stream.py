@@ -137,13 +137,8 @@ async def use_stream_response(req_id: str, page: Any = None) -> AsyncGenerator[A
                                             pass
                                     functions_list.append({"name": fn_name, "params": fn_args})
 
-                                # DEBUG: Log function call content and sleep for 10s BEFORE yielding
-                                # This ensures execution happens before the consumer closes the generator upon receiving 'done'
-                                logger.warning(f"[{req_id}] [DEBUG] Function Call Detected via DOM Fallback:")
-                                logger.warning(json.dumps(functions_list, indent=2, ensure_ascii=False))
-                                logger.warning(f"[{req_id}] [DEBUG] Sleeping 10 seconds for inspection...")
-                                await asyncio.sleep(10)
-                                logger.warning(f"[{req_id}] [DEBUG] Woke up from sleep. Yielding result.")
+                                # DEBUG: Log function call content (no sleep)
+                                logger.info(f"[{req_id}] Function Call Detected via DOM Fallback: {len(functions_list)} calls")
 
                                 # Yield constructed packet
                                 yield {

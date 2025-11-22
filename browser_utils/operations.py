@@ -655,10 +655,11 @@ async def get_response_via_function_card(
         count = await all_function_chunks.count()
 
         if count == 0:
-            logger.info(f"[{req_id}] (FunctionScraper) DEBUG: No 'ms-function-call-chunk' elements found on page.")
+            if DEBUG_LOGS_ENABLED:
+                logger.debug(f"[{req_id}] (FunctionScraper) No 'ms-function-call-chunk' elements found on page.")
             return None
 
-        logger.info(f"[{req_id}] (FunctionScraper) DEBUG: Found {count} function chunks. Processing all...")
+        logger.info(f"[{req_id}] (FunctionScraper) Function call card detected! Found {count} chunks. Processing...")
 
         tool_calls = []
 
@@ -731,7 +732,8 @@ async def get_response_via_function_card(
             logger.info(f"[{req_id}] (FunctionScraper) Successfully extracted {len(tool_calls)} tool calls.")
             return json.dumps(tool_calls, ensure_ascii=False)
         else:
-            logger.info(f"[{req_id}] (FunctionScraper) No valid tool calls extracted from {count} chunks.")
+            if DEBUG_LOGS_ENABLED:
+                logger.debug(f"[{req_id}] (FunctionScraper) No valid tool calls extracted from {count} chunks.")
             return None
 
     except Exception as e:

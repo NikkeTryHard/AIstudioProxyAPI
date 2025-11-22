@@ -546,14 +546,12 @@ async def queue_worker() -> None:
 
                     # 清空聊天历史（对于所有模式：流式和非流式）
                     if submit_btn_loc and client_disco_checker:
-                        if has_tool_calls:
-                            logger.info(
-                                f"[{req_id}] (Worker) ⏳ 跳过聊天历史清空：检测到工具调用，保留上下文以供后续结果提交。"
-                            )
-                        else:
-                            from server import page_instance, is_page_ready
+                        # 无论是否有工具调用，都清空聊天历史，以支持无状态的文本提交模式
+                        # if has_tool_calls: ... (removed logic)
 
-                            if page_instance and is_page_ready:
+                        from server import page_instance, is_page_ready
+
+                        if page_instance and is_page_ready:
                                 from browser_utils.page_controller import PageController
 
                                 page_controller = PageController(
