@@ -146,20 +146,39 @@ def _generate_google_function_schema(tools: List[Dict[str, Any]]) -> Optional[st
 
     return json.dumps(google_functions, indent=2, ensure_ascii=False)
 
-def prepare_combined_prompt(messages: List[Message], req_id: str, tools: Optional[List[Dict[str, Any]]] = None, tool_choice: Optional[Union[str, Dict[str, Any]]] = None) -> Tuple[str, List[str], Optional[str]]:
+def prepare_combined_prompt(
+    messages: List[Message],
+    req_id: str,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None,
+    system_instruction: Optional[str] = None
+) -> Tuple[str, List[str], Optional[str], Optional[str]]:
     """准备组合提示
-    Returns: (final_prompt, files_list, functions_json_str)
+
+    Args:
+        messages: 消息列表
+        req_id: 请求ID
+        tools: 工具定义列表
+        tool_choice: 工具选择策略
+        system_instruction: 明确的系统指令（优先级高于消息中的system角色）
+
+    Returns: (final_prompt, files_list, functions_json_str, system_instruction_to_set)
+        - final_prompt: 最终的提示文本（不包含系统指令）
+        - files_list: 文件路径列表
+        - functions_json_str: 工具定义JSON字符串
+        - system_instruction_to_set: 需要设置的系统指令（None表示清空）
     """
     from server import logger
 
     logger.info(f"[{req_id}] (准备提示) 正在从 {len(messages)} 条消息准备组合提示 (包括历史)。")
-    # 不在此处清空 upload_files；由上层在每次请求开始时按需清理，避免历史附件丢失导致“文件不存在”错误。
+    # 不在此处清空 upload_files；由上层在每次请求开始时按需清理，避免历史附件丢失导致"文件不存在"错误。
 
     combined_parts = []
     system_prompt_content: Optional[str] = None
     processed_system_message_indices = set()
     files_list: List[str] = []  # 收集需要上传的本地文件路径（图片、视频、PDF等）
     functions_json_str: Optional[str] = None
+    final_system_instruction: Optional[str] = None
 
     # 处理工具定义：转换为 Google AI Studio JSON 格式，而不是注入到文本提示中
     if isinstance(tools, list) and len(tools) > 0:
@@ -180,20 +199,27 @@ def prepare_combined_prompt(messages: List[Message], req_id: str, tools: Optiona
             logger.error(f"[{req_id}] (准备提示) 处理工具定义时出错: {e}")
             # 出错时回退到旧逻辑？不，这会破坏计划。保持 None。
 
-    # 处理系统消息
-    for i, msg in enumerate(messages):
-        if msg.role == 'system':
-            content = msg.content
-            if isinstance(content, str) and content.strip():
-                system_prompt_content = content.strip()
-                processed_system_message_indices.add(i)
-                logger.info(f"[{req_id}] (准备提示) 在索引 {i} 找到并使用系统提示: '{system_prompt_content[:80]}...'")
-                system_instr_prefix = "系统指令:\n"
-                combined_parts.append(f"{system_instr_prefix}{system_prompt_content}")
-            else:
-                logger.info(f"[{req_id}] (准备提示) 在索引 {i} 忽略非字符串或空的系统消息。")
-                processed_system_message_indices.add(i)
-            break
+    # 处理系统指令：优先使用明确参数，否则从消息中提取
+    # Priority 1: 明确的 system_instruction 参数（最高优先级）
+    if system_instruction is not None and system_instruction.strip():
+        final_system_instruction = system_instruction.strip()
+        logger.info(f"[{req_id}] (准备提示) 使用明确的 system_instruction 参数: '{final_system_instruction[:80]}...'")
+    else:
+        # Priority 2: 从消息中提取 role='system' 的内容（向后兼容）
+        for i, msg in enumerate(messages):
+            if msg.role == 'system':
+                content = msg.content
+                if isinstance(content, str) and content.strip():
+                    system_prompt_content = content.strip()
+                    final_system_instruction = system_prompt_content
+                    processed_system_message_indices.add(i)
+                    logger.info(f"[{req_id}] (准备提示) 从消息索引 {i} 提取系统指令: '{system_prompt_content[:80]}...'")
+                else:
+                    logger.info(f"[{req_id}] (准备提示) 在索引 {i} 忽略非字符串或空的系统消息。")
+                    processed_system_message_indices.add(i)
+                break
+
+    # 系统指令现在通过专用UI设置，不再添加到 combined_parts
 
     role_map_ui = {"user": "User", "assistant": "Model", "system": "System", "tool": "Tool"}
     turn_separator = "\n---\n"
@@ -510,11 +536,12 @@ def prepare_combined_prompt(messages: List[Message], req_id: str, tools: Optiona
     final_prompt = "".join(combined_parts)
     if final_prompt:
         final_prompt += "\n"
-    
-    preview_text = final_prompt[:300].replace('\n', '\\n')
-    logger.info(f"[{req_id}] (准备提示) 组合提示长度: {len(final_prompt)}，附件数量: {len(files_list)}，工具定义: {'有' if functions_json_str else '无'}。预览: '{preview_text}...'")
 
-    return final_prompt, files_list, functions_json_str
+    preview_text = final_prompt[:300].replace('\n', '\\n')
+    sys_instr_info = f"系统指令: {'有({len(final_system_instruction)}字符)' if final_system_instruction else '无'}"
+    logger.info(f"[{req_id}] (准备提示) 组合提示长度: {len(final_prompt)}，附件数量: {len(files_list)}，工具定义: {'有' if functions_json_str else '无'}，{sys_instr_info}。预览: '{preview_text}...'")
+
+    return final_prompt, files_list, functions_json_str, final_system_instruction
 
 
 def _extract_json_from_text(text: str) -> Optional[str]:

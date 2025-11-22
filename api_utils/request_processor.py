@@ -128,8 +128,8 @@ async def _prepare_and_validate_request(
     req_id: str,
     request: ChatCompletionRequest,
     check_client_disconnected: Callable,
-) -> Tuple[str, List[str], Optional[str]]:
-    """准备和验证请求，返回 (组合提示, 图片路径列表, 函数定义JSON)。"""
+) -> Tuple[str, List[str], Optional[str], Optional[str]]:
+    """准备和验证请求，返回 (组合提示, 图片路径列表, 函数定义JSON, 系统指令)。"""
     try:
         validate_chat_request(request.messages, req_id)
     except ValueError as e:
@@ -139,11 +139,13 @@ async def _prepare_and_validate_request(
     # 满足用户新需求：make that tool call result where it should be, under that tool call function request in chat history
     messages_to_process = list(request.messages) if request.messages else []
 
-    prepared_prompt, images_list, functions_json = prepare_combined_prompt(
+    # 准备组合提示，包括系统指令处理
+    prepared_prompt, images_list, functions_json, system_instruction_to_set = prepare_combined_prompt(
         messages_to_process,
         req_id,
         getattr(request, "tools", None),
         getattr(request, "tool_choice", None),
+        getattr(request, "system_instruction", None),  # 传递明确的系统指令
     )
 
     # 基于 tools/tool_choice 的主动函数执行（支持 per-request MCP 端点）
@@ -217,7 +219,7 @@ async def _prepare_and_validate_request(
     except Exception:
         pass
 
-    return prepared_prompt, images_list, functions_json
+    return prepared_prompt, images_list, functions_json, system_instruction_to_set
 
 
 async def _handle_response_processing(
@@ -677,9 +679,13 @@ async def _process_request_refactored(
             prepared_prompt,
             image_list,
             functions_json,
+            system_instruction_to_set,
         ) = await _prepare_and_validate_request(
             req_id, request, check_client_disconnected
         )
+
+        # Store system instruction in context for later use
+        context["system_instruction"] = system_instruction_to_set
         # 额外合并顶层与消息级 attachments/files（兼容历史记录）已在下方处理；此处确保路径存在
         try:
             valid_images: List[str] = []
@@ -767,6 +773,21 @@ async def _process_request_refactored(
             context.get("parsed_model_list", []),
             check_client_disconnected,
         )
+
+        # 设置系统指令（如果提供）
+        system_instruction_from_context = context.get("system_instruction")
+        if system_instruction_from_context is not None:
+            # 有明确的系统指令（可能是空字符串，表示清空）
+            logger.info(f"[{req_id}] 正在设置系统指令...")
+            try:
+                await page_controller.set_system_instructions(
+                    system_instruction_from_context,
+                    check_client_disconnected
+                )
+            except Exception as e:
+                logger.error(f"[{req_id}] 设置系统指令失败: {e}")
+                # 系统指令设置失败不应阻止请求继续，只记录错误
+                # 用户可以通过日志看到问题
 
         # 优化：在提交提示前再次检查客户端连接，避免不必要的后台请求
         check_client_disconnected("提交提示前最终检查")

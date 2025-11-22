@@ -10,6 +10,7 @@ from browser_utils.page_controller_modules import (
     InputController,
     ChatController,
     ResponseController,
+    SystemInstructionsController,
     BaseController
 )
 
@@ -19,6 +20,7 @@ class PageController(
     InputController,
     ChatController,
     ResponseController,
+    SystemInstructionsController,
     BaseController
 ):
     """封装了与AI Studio页面交互的所有操作。"""
