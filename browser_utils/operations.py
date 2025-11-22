@@ -675,6 +675,107 @@ async def get_response_via_copy_button(
         await save_error_snapshot(f"copy_response_unexpected_error_{req_id}")
         return None
 
+async def get_response_via_function_card(
+    page: AsyncPage,
+    req_id: str
+) -> Optional[str]:
+    """
+    (v10.4) Global search for ALL ms-function-call-chunk elements.
+    Approach: Page -> All Function Chunks -> Iterate and Extract.
+    Includes logic to expand collapsed function cards.
+    Returns a JSON list of tool calls if found.
+    """
+    try:
+        # 1. Find ALL function call chunks on the page
+        # Note: We assume history is cleared or we are only interested in the current page state.
+        # If history is present, this might return old calls.
+        all_function_chunks = page.locator("ms-function-call-chunk")
+        count = await all_function_chunks.count()
+
+        if count == 0:
+            logger.info(f"[{req_id}] (FunctionScraper) DEBUG: No 'ms-function-call-chunk' elements found on page.")
+            return None
+
+        logger.info(f"[{req_id}] (FunctionScraper) DEBUG: Found {count} function chunks. Processing all...")
+
+        tool_calls = []
+
+        for i in range(count):
+            chunk = all_function_chunks.nth(i)
+            try:
+                # --- A. Expansion Logic ---
+                header = chunk.locator("mat-expansion-panel-header").first
+                if await header.count() > 0:
+                    is_expanded = await header.get_attribute("aria-expanded")
+
+                    if is_expanded == "false":
+                        logger.info(f"[{req_id}] (FunctionScraper) Chunk {i+1}/{count} is collapsed. Expanding...")
+                        await header.click()
+                        try:
+                            await chunk.locator(".mat-expansion-panel-body").wait_for(state="visible", timeout=2000)
+                            logger.info(f"[{req_id}] (FunctionScraper) DEBUG: Expansion body visible.")
+                        except Exception as wait_err:
+                            logger.warning(f"[{req_id}] (FunctionScraper) Wait for expansion body failed for chunk {i+1}: {wait_err}")
+
+                # --- B. Extract Function Name ---
+                fn_name = "Bash" # Default
+                try:
+                    title_spans = chunk.locator("mat-panel-title span")
+                    span_count = await title_spans.count()
+
+                    if span_count >= 2:
+                        fn_name = (await title_spans.nth(1).inner_text()).strip()
+
+                    logger.info(f"[{req_id}] (FunctionScraper) Chunk {i+1}: Extracted name='{fn_name}'")
+
+                except Exception as name_err:
+                    logger.warning(f"[{req_id}] (FunctionScraper) Failed to extract function name for chunk {i+1}: {name_err}")
+
+                # --- C. Extract JSON Payload ---
+                code_el = chunk.locator("pre code").first
+                code_count = await code_el.count()
+
+                if code_count > 0:
+                    json_text = await code_el.inner_text()
+
+                    if json_text:
+                        try:
+                            parsed = json.loads(json_text.strip())
+
+                            tool_call = None
+                            if isinstance(parsed, dict):
+                                if "name" in parsed and "arguments" in parsed:
+                                    tool_call = parsed
+                                else:
+                                    tool_call = {"name": fn_name, "arguments": parsed}
+                            else:
+                                tool_call = {"name": fn_name, "arguments": parsed}
+
+                            tool_calls.append(tool_call)
+                            logger.info(f"[{req_id}] (FunctionScraper) Chunk {i+1}: Added tool call '{fn_name}'")
+
+                        except json.JSONDecodeError:
+                            logger.warning(f"[{req_id}] (FunctionScraper) Chunk {i+1} invalid JSON content")
+                else:
+                    # Try alternative selector? ms-code-block?
+                    alt_code = chunk.locator("ms-code-block").first
+                    if await alt_code.count() > 0:
+                         logger.info(f"[{req_id}] (FunctionScraper) DEBUG: Found ms-code-block but no 'pre code' inside?")
+
+            except Exception as chunk_err:
+                logger.warning(f"[{req_id}] (FunctionScraper) Error processing chunk {i+1}: {chunk_err}")
+
+        if tool_calls:
+            logger.info(f"[{req_id}] (FunctionScraper) Successfully extracted {len(tool_calls)} tool calls.")
+            return json.dumps(tool_calls, ensure_ascii=False)
+        else:
+            logger.info(f"[{req_id}] (FunctionScraper) No valid tool calls extracted from {count} chunks.")
+            return None
+
+    except Exception as e:
+        logger.error(f"[{req_id}] (FunctionScraper) Extraction failed: {e}")
+        return None
+
 async def _wait_for_response_completion(
     page: AsyncPage,
     prompt_textarea_locator: Locator,
@@ -770,13 +871,23 @@ async def _get_final_response_content(
 ) -> Optional[str]:
     """获取最终响应内容"""
     logger.info(f"[{req_id}] (Helper GetContent) 开始获取最终响应内容...")
+
+    # 1. 尝试检测函数调用卡片 (v6)
+    # 函数调用卡片可能没有标准的文本编辑按钮，优先检查
+    func_call_json = await get_response_via_function_card(page, req_id)
+    if func_call_json:
+         logger.info(f"[{req_id}] (Helper GetContent) ✅ 成功提取函数调用数据。")
+         return func_call_json
+
+    # 2. 尝试标准编辑按钮
     response_content = await get_response_via_edit_button(
         page, req_id, check_client_disconnected
     )
     if response_content is not None:
         logger.info(f"[{req_id}] (Helper GetContent) ✅ 成功通过编辑按钮获取内容。")
         return response_content
-    
+
+    # 3. 尝试复制按钮
     logger.warning(f"[{req_id}] (Helper GetContent) 编辑按钮方法失败或返回空，回退到复制按钮方法...")
     response_content = await get_response_via_copy_button(
         page, req_id, check_client_disconnected
@@ -784,7 +895,7 @@ async def _get_final_response_content(
     if response_content is not None:
         logger.info(f"[{req_id}] (Helper GetContent) ✅ 成功通过复制按钮获取内容。")
         return response_content
-    
+
     logger.error(f"[{req_id}] (Helper GetContent) 所有获取响应内容的方法均失败。")
     await save_error_snapshot(f"get_content_all_methods_failed_{req_id}")
     return None 

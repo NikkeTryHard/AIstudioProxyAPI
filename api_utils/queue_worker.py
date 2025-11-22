@@ -214,29 +214,33 @@ async def queue_worker() -> None:
                             req_id, request_data, http_request, result_future
                         )
 
-                        completion_event, submit_btn_loc, client_disco_checker = (
+                        completion_event, submit_btn_loc, client_disco_checker, has_tool_calls = (
                             None,
                             None,
                             None,
+                            False,
                         )
                         current_request_was_streaming = False
 
                         if (
                             isinstance(returned_value, tuple)
-                            and len(returned_value) == 3
+                            and len(returned_value) >= 3
                         ):
-                            completion_event, submit_btn_loc, client_disco_checker = (
-                                returned_value
-                            )
+                            if len(returned_value) == 4:
+                                completion_event, submit_btn_loc, client_disco_checker, has_tool_calls = returned_value
+                            else:
+                                completion_event, submit_btn_loc, client_disco_checker = returned_value
+                                has_tool_calls = False
+
                             if completion_event is not None:
                                 current_request_was_streaming = True
                                 logger.info(
-                                    f"[{req_id}] (Worker) _process_request_refactored returned stream info (event, locator, checker)."
+                                    f"[{req_id}] (Worker) _process_request_refactored returned stream info (event, locator, checker, has_tool_calls={has_tool_calls})."
                                 )
                             else:
                                 current_request_was_streaming = False
                                 logger.info(
-                                    f"[{req_id}] (Worker) _process_request_refactored returned a tuple, but completion_event is None (likely non-stream or early exit)."
+                                    f"[{req_id}] (Worker) _process_request_refactored returned non-stream completion info (has_tool_calls={has_tool_calls})."
                                 )
                         elif returned_value is None:
                             current_request_was_streaming = False
@@ -498,21 +502,26 @@ async def queue_worker() -> None:
 
                     # 清空聊天历史（对于所有模式：流式和非流式）
                     if submit_btn_loc and client_disco_checker:
-                        from server import page_instance, is_page_ready
-
-                        if page_instance and is_page_ready:
-                            from browser_utils.page_controller import PageController
-
-                            page_controller = PageController(
-                                page_instance, logger, req_id
-                            )
+                        if has_tool_calls:
                             logger.info(
-                                f"[{req_id}] (Worker) 执行聊天历史清空（{'流式' if completion_event else '非流式'}模式）..."
+                                f"[{req_id}] (Worker) ⏳ 跳过聊天历史清空：检测到工具调用，保留上下文以供后续结果提交。"
                             )
-                            await page_controller.clear_chat_history(
-                                client_disco_checker
-                            )
-                            logger.info(f"[{req_id}] (Worker) ✅ 聊天历史清空完成。")
+                        else:
+                            from server import page_instance, is_page_ready
+
+                            if page_instance and is_page_ready:
+                                from browser_utils.page_controller import PageController
+
+                                page_controller = PageController(
+                                    page_instance, logger, req_id
+                                )
+                                logger.info(
+                                    f"[{req_id}] (Worker) 执行聊天历史清空（{'流式' if completion_event else '非流式'}模式）..."
+                                )
+                                await page_controller.clear_chat_history(
+                                    client_disco_checker
+                                )
+                                logger.info(f"[{req_id}] (Worker) ✅ 聊天历史清空完成。")
                     else:
                         logger.info(
                             f"[{req_id}] (Worker) 跳过聊天历史清空：缺少必要参数（submit_btn_loc: {bool(submit_btn_loc)}, client_disco_checker: {bool(client_disco_checker)}）"

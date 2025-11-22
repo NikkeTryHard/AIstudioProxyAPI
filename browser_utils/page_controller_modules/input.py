@@ -21,9 +21,14 @@ class InputController(BaseController):
     """Handles prompt input and submission."""
 
     async def submit_prompt(
-        self, prompt: str, image_list: List, check_client_disconnected: Callable
+        self, prompt: str, image_list: List, functions_json: Optional[str], check_client_disconnected: Callable
     ):
         """提交提示到页面。"""
+        # 如果有函数定义，先注入
+        if functions_json:
+            await self.inject_functions(functions_json)
+            await self._check_disconnect(check_client_disconnected, "After Function Injection")
+
         self.logger.info(f"[{self.req_id}] 填充并提交提示 ({len(prompt)} chars)...")
         prompt_textarea_locator = self.page.locator(PROMPT_TEXTAREA_SELECTOR)
         autosize_wrapper_locator = self.page.locator(
@@ -121,6 +126,114 @@ class InputController(BaseController):
                 await save_error_snapshot(f"input_submit_error_{self.req_id}")
             raise
 
+    async def inject_functions(self, functions_json: str):
+        """注入函数定义到 Google AI Studio UI (v3 Refined + v4 Tab Switch)。"""
+        self.logger.info(f"[{self.req_id}] 正在注入函数定义...")
+
+        TOGGLE_SELECTOR = "mat-slide-toggle.function-calling-toggle"
+        EDIT_BUTTON_SELECTOR = "button.edit-function-declarations-button"
+        EDITOR_TEXTAREA_SELECTOR = "ms-text-editor textarea"
+
+        # 1. Handle Toggle
+        toggle = self.page.locator(TOGGLE_SELECTOR).first
+        try:
+            if await toggle.is_visible(timeout=3000):
+                # Check state via aria-checked on the button inside
+                toggle_btn = toggle.locator("button[role='switch']")
+                is_checked = await toggle_btn.get_attribute("aria-checked") == "true"
+
+                if not is_checked:
+                    self.logger.info(f"[{self.req_id}] 函数调用开关未开启，正在点击开启...")
+                    await toggle.click()
+                    # CRITICAL WAIT as per plan v3
+                    await asyncio.sleep(1.0)
+                else:
+                    self.logger.info(f"[{self.req_id}] 函数调用开关已开启。")
+            else:
+                self.logger.warning(f"[{self.req_id}] 未找到函数调用开关，尝试继续...")
+        except Exception as e:
+             self.logger.error(f"[{self.req_id}] 处理函数开关时出错: {e}")
+
+        # 2. Click Edit Button
+        edit_btn = self.page.locator(EDIT_BUTTON_SELECTOR).first
+        try:
+            if await edit_btn.is_visible(timeout=2000):
+                await edit_btn.click()
+                self.logger.info(f"[{self.req_id}] 已点击 'Edit' 按钮。")
+                await asyncio.sleep(1.0) # Wait for editor drawer
+            else:
+                 self.logger.warning(f"[{self.req_id}] 'Edit' 按钮不可见。")
+        except Exception as e:
+            self.logger.error(f"[{self.req_id}] 点击 Edit 按钮出错: {e}")
+
+        # 2.5. Switch to Code Editor Tab (v4)
+        try:
+            # Selector from plantofunctioncalling4.md
+            code_tab = self.page.locator("button[role='tab']").filter(has_text="Code Editor").first
+
+            if await code_tab.count() > 0:
+                if await code_tab.is_visible():
+                    is_selected = await code_tab.get_attribute("aria-selected") == "true"
+                    if not is_selected:
+                        self.logger.info(f"[{self.req_id}] 检测到代码编辑器未选中，正在切换...")
+                        await code_tab.click()
+                        await asyncio.sleep(1.0) # Critical wait for tab switch
+                    else:
+                        self.logger.info(f"[{self.req_id}] 代码编辑器标签页已选中。")
+                else:
+                    self.logger.warning(f"[{self.req_id}] 'Code Editor' 标签页元素存在但不可见。")
+            else:
+                # Fallback: Try searching for just "Code" if "Code Editor" fails?
+                # The plan is strict, but if the text varies slightly it might fail.
+                # I'll stick to the plan first.
+                self.logger.warning(f"[{self.req_id}] 未找到 'Code Editor' 标签页。尝试继续...")
+
+        except Exception as e:
+             self.logger.warning(f"[{self.req_id}] 尝试切换标签页时出错 (非致命): {e}")
+
+        # 3. Inject JSON
+        editor_area = self.page.locator(EDITOR_TEXTAREA_SELECTOR).first
+        try:
+            await expect_async(editor_area).to_be_visible(timeout=5000)
+
+            # Clear and Fill
+            await editor_area.fill("") # Clear first
+            await editor_area.fill(functions_json)
+
+            # Dispatch events to ensure binding updates
+            await editor_area.evaluate(
+                """
+                (element) => {
+                    element.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                    element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                }
+                """
+            )
+            self.logger.info(f"[{self.req_id}] 已成功注入函数定义 JSON。")
+            await asyncio.sleep(0.5)
+
+        except Exception as e:
+            self.logger.error(f"[{self.req_id}] 注入 JSON 失败: {e}")
+            await save_error_snapshot(f"function_injection_error_{self.req_id}")
+
+        # 4. Save & Close (v5)
+        SAVE_BUTTON_SELECTOR = 'button.ms-button-primary[aria-label="Save the current function declarations"]'
+        try:
+            save_btn = self.page.locator(SAVE_BUTTON_SELECTOR)
+            # Ensure visible and enabled
+            await expect_async(save_btn).to_be_visible(timeout=3000)
+
+            self.logger.info(f"[{self.req_id}] 正在点击保存按钮...")
+            await save_btn.click()
+
+            # Critical wait for drawer to close and overlay to disappear
+            await asyncio.sleep(1.0)
+            self.logger.info(f"[{self.req_id}] 函数定义已保存，编辑器已关闭。")
+
+        except Exception as e:
+            self.logger.error(f"[{self.req_id}] 点击保存按钮失败: {e}")
+            await save_error_snapshot(f"save_function_error_{self.req_id}")
+
     async def _open_upload_menu_and_choose_file(self, files_list: List[str]) -> bool:
         """通过'Insert assets'菜单选择'上传/Upload'项并打开文件选择器设置文件。"""
         try:
@@ -206,6 +319,152 @@ class InputController(BaseController):
         except Exception as e:
             self.logger.error(f"[{self.req_id}] 通过上传菜单设置文件失败: {e}")
             return False
+
+    async def submit_tool_outputs(self, tool_outputs: List[dict], check_client_disconnected: Callable):
+        """提交工具执行结果到 UI (基于 plantofunctioncalling2.md 的精确实现)。"""
+        self.logger.info(f"[{self.req_id}] 正在提交工具执行结果 (v3-FixedInput)...")
+
+        # Constants
+        FUNCTION_CHUNK_SELECTOR = 'ms-function-call-chunk'
+        SEND_BUTTON_SELECTOR = 'button.ms-button-primary'
+
+        try:
+            # 迭代提交每一个工具结果
+            for i, output_item in enumerate(tool_outputs):
+                output_content = output_item.get("output")
+                if not output_content:
+                    continue
+
+                self.logger.info(f"[{self.req_id}] 处理第 {i+1}/{len(tool_outputs)} 个工具结果...")
+
+                # 1. 查找活跃的输入框
+                active_input = None
+
+                # Strategy A: Direct efficient search
+                # Try commonly known selectors
+                candidates = [
+                    'input[placeholder="Enter function response"]',
+                    'textarea[placeholder="Enter function response"]',
+                    'input[aria-label="Enter function response"]',
+                    # Broad fallback if specific attributes changed
+                    f'{FUNCTION_CHUNK_SELECTOR} input:not([disabled])',
+                    f'{FUNCTION_CHUNK_SELECTOR} textarea:not([disabled])'
+                ]
+
+                for sel in candidates:
+                    # Only try exact selectors first, broad ones later
+                    if "chunk" in sel:
+                        continue
+
+                    loc = self.page.locator(f"{sel}:not([disabled])").first
+                    if await loc.count() > 0 and await loc.is_visible():
+                        active_input = loc
+                        self.logger.info(f"[{self.req_id}] 通过选择器 {sel} 找到活跃输入框。")
+                        break
+
+                # Strategy B: Deep Search in Chunks (if A failed)
+                if not active_input:
+                    self.logger.warning(f"[{self.req_id}] 未能直接找到活跃输入框，开始深度搜索 chunks...")
+                    chunks = self.page.locator(FUNCTION_CHUNK_SELECTOR)
+                    count = await chunks.count()
+
+                    if count == 0:
+                         self.logger.warning(f"[{self.req_id}] ⚠️ 未找到任何 ms-function-call-chunk 元素！")
+
+                    for idx in range(count):
+                        chunk = chunks.nth(idx)
+
+                        # Ensure expanded
+                        panel_header = chunk.locator("mat-expansion-panel-header").first
+                        if await panel_header.is_visible():
+                            is_expanded = await panel_header.get_attribute("aria-expanded")
+                            if is_expanded != "true":
+                                self.logger.info(f"[{self.req_id}] 展开折叠的函数卡片 #{idx}...")
+                                await panel_header.click()
+                                await asyncio.sleep(0.5)
+
+                        # Search for ANY input/textarea inside
+                        inputs = chunk.locator("input, textarea")
+                        input_count = await inputs.count()
+
+                        for k in range(input_count):
+                            inp = inputs.nth(k)
+                            # Log details for debugging
+                            try:
+                                html_outer = await inp.evaluate("el => el.outerHTML")
+                                is_vis = await inp.is_visible()
+                                is_en = await inp.is_enabled()
+                                placeholder = await inp.get_attribute("placeholder") or ""
+
+                                self.logger.info(f"[{self.req_id}] Chunk #{idx} Input #{k}: Visible={is_vis}, Enabled={is_en}, Placeholder='{placeholder}', HTML={html_outer[:100]}...")
+
+                                # Basic heuristics for validity
+                                # Ignore file inputs or search inputs if any
+                                type_attr = await inp.get_attribute("type") or "text"
+                                if type_attr in ["file", "hidden", "checkbox", "radio"]:
+                                    continue
+
+                                if is_vis and is_en:
+                                    # Found a candidate!
+                                    active_input = inp
+                                    self.logger.info(f"[{self.req_id}] ✅ 选定上述输入框作为目标。")
+                                    break
+                            except Exception as e:
+                                self.logger.warning(f"Input check failed: {e}")
+
+                        if active_input:
+                            break
+
+                if not active_input:
+                    self.logger.error(f"[{self.req_id}] ❌ 彻底无法找到活跃的函数结果输入框 (第 {i+1} 个)")
+                    # Capture snapshot for analysis
+                    await save_error_snapshot(f"missing_result_input_deep_{self.req_id}_{i}")
+                    raise Exception("Could not find function result input field")
+
+                self.logger.info(f"[{self.req_id}] 找到活跃输入框，正在填充结果...")
+
+                # 确保在视图中
+                await active_input.scroll_into_view_if_needed()
+
+                # 填充内容
+                content_str = str(output_content)
+                await active_input.fill(content_str)
+
+                # 等待一下，让 UI 响应输入并启用发送按钮
+                await asyncio.sleep(0.5)
+
+                # 2. 定位发送按钮 (相对于 active_input 的父级 form)
+                try:
+                    # 找到该 input 所属的 form
+                    # 使用 xpath ancestor 查找最近的 form
+                    form = active_input.locator("xpath=ancestor::form").first
+
+                    # 尝试多种按钮选择器
+                    send_button = form.locator(f"{SEND_BUTTON_SELECTOR}[type='submit']")
+                    if await send_button.count() == 0:
+                         # Fallback: look for any button inside the form that isn't the input itself
+                         send_button = form.locator("button[type='submit']")
+
+                    # 确保按钮可见且启用
+                    await expect_async(send_button).to_be_visible(timeout=2000)
+                    await expect_async(send_button).not_to_be_disabled(timeout=3000)
+
+                    # 点击发送
+                    await send_button.click()
+                    self.logger.info(f"[{self.req_id}] 已点击发送按钮。")
+
+                    # 等待提交处理
+                    await asyncio.sleep(1.0)
+
+                except Exception as btn_err:
+                    self.logger.warning(f"[{self.req_id}] 发送按钮定位或点击失败: {btn_err}。尝试回车键兜底。")
+                    await active_input.press("Enter")
+                    await asyncio.sleep(1.0)
+
+        except Exception as e:
+            self.logger.error(f"[{self.req_id}] 提交工具结果过程中发生错误: {e}")
+            await save_error_snapshot(f"submit_tool_output_error_{self.req_id}")
+            raise
 
     async def _handle_post_upload_dialog(self):
         """处理上传后可能出现的授权/版权确认对话框，优先点击同意类按钮，不主动关闭重要对话框。"""

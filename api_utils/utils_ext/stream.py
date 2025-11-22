@@ -3,9 +3,11 @@ import json
 from typing import Any, AsyncGenerator
 
 
-async def use_stream_response(req_id: str) -> AsyncGenerator[Any, None]:
+async def use_stream_response(req_id: str, page: Any = None) -> AsyncGenerator[Any, None]:
     from server import STREAM_QUEUE, logger
     import queue
+    from browser_utils.operations import get_response_via_function_card
+    import time
 
     if STREAM_QUEUE is None:
         logger.warning(f"[{req_id}] STREAM_QUEUE is None, 无法使用流响应")
@@ -20,10 +22,15 @@ async def use_stream_response(req_id: str) -> AsyncGenerator[Any, None]:
     received_items_count = 0
     stale_done_ignored = False
 
+    # DOM Polling state
+    POLL_INTERVAL = 1.0
+    last_queue_activity_time = time.time()
+
     try:
         while True:
             try:
                 data = STREAM_QUEUE.get_nowait()
+                last_queue_activity_time = time.time()
                 if data is None:
                     logger.info(f"[{req_id}] 接收到流结束标志 (None)")
                     break
@@ -95,11 +102,72 @@ async def use_stream_response(req_id: str) -> AsyncGenerator[Any, None]:
                             stale_done_ignored = False
             except (queue.Empty, asyncio.QueueEmpty):
                 empty_count += 1
+
+                # DOM Fallback for Function Calls
+                time_since_last_activity = time.time() - last_queue_activity_time
+                if page and time_since_last_activity > POLL_INTERVAL:
+                    # Poll DOM
+                    try:
+                        func_call_json = await get_response_via_function_card(page, req_id)
+                        if func_call_json:
+                            logger.info(f"[{req_id}] [非流式] 检测到 DOM 中的函数调用，正在回退到 DOM 提取...")
+
+                            # Parse the JSON to get tool calls list
+                            try:
+                                tool_calls_data = json.loads(func_call_json)
+
+                                # Convert to internal format expected by consumer
+                                # The consumer expects: {"function": [{"name":..., "params":...}]}
+                                # get_response_via_function_card returns OpenAI format or list of it?
+                                # It returns {"name":..., "arguments":...} (dict) or list of dicts.
+
+                                functions_list = []
+                                if isinstance(tool_calls_data, dict):
+                                    tool_calls_data = [tool_calls_data]
+
+                                for tc in tool_calls_data:
+                                    # tc has "name", "arguments" (dict or obj)
+                                    fn_name = tc.get("name")
+                                    fn_args = tc.get("arguments")
+                                    # Ensure args is dict
+                                    if isinstance(fn_args, str):
+                                        try:
+                                            fn_args = json.loads(fn_args)
+                                        except:
+                                            pass
+                                    functions_list.append({"name": fn_name, "params": fn_args})
+
+                                # DEBUG: Log function call content and sleep for 10s BEFORE yielding
+                                # This ensures execution happens before the consumer closes the generator upon receiving 'done'
+                                logger.warning(f"[{req_id}] [DEBUG] Function Call Detected via DOM Fallback:")
+                                logger.warning(json.dumps(functions_list, indent=2, ensure_ascii=False))
+                                logger.warning(f"[{req_id}] [DEBUG] Sleeping 10 seconds for inspection...")
+                                await asyncio.sleep(10)
+                                logger.warning(f"[{req_id}] [DEBUG] Woke up from sleep. Yielding result.")
+
+                                # Yield constructed packet
+                                yield {
+                                    "done": True,
+                                    "body": "",
+                                    "reason": "function_call",
+                                    "function": functions_list
+                                }
+
+                                return # End generator
+                            except Exception as parse_err:
+                                logger.error(f"[{req_id}] 解析 DOM 函数调用数据失败: {parse_err}")
+                    except Exception as dom_err:
+                        logger.warning(f"[{req_id}] DOM 回退轮询出错: {dom_err}")
+
+                    # Reset timer to avoid spamming poll
+                    last_queue_activity_time = time.time()
+
                 if empty_count % 50 == 0:
                     logger.info(
                         f"[{req_id}] 等待流数据... ({empty_count}/{max_empty_retries}, 已收到:{received_items_count}项)"
                     )
                 if empty_count >= max_empty_retries:
+
                     if not data_received:
                         logger.error(
                             f"[{req_id}] 流响应队列空读取次数达到上限且未收到任何数据，可能是辅助流未启动或出错"
