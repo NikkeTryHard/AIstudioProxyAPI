@@ -215,7 +215,9 @@ env.bak/
 venv.bak/
 
 # Error snapshots directory (Python specific)
-errors_py/
+# New date-based structure: errors_py/YYYY-MM-DD/HH-MM-SS_reqid_errorname/
+errors_py/*/
+!errors_py/.gitkeep
 logs/
 
 # Authentication Profiles (Sensitive)

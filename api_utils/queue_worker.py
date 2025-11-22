@@ -434,17 +434,61 @@ async def queue_worker() -> None:
                                     logger.warning(
                                         f"[{req_id}] ⚠️ 流式响应后按钮状态处理超时或错误: {e_pw_disabled}"
                                     )
-                                    from api_utils.request_processor import (
-                                        save_error_snapshot,
-                                    )
+                                    # Use comprehensive snapshot for better debugging
+                                    from browser_utils.debug_utils import save_comprehensive_snapshot
+                                    from server import page_instance
+                                    from config import PROMPT_TEXTAREA_SELECTOR
+                                    import os
 
-                                    await save_error_snapshot(
-                                        f"stream_post_submit_button_handling_timeout_{req_id}"
-                                    )
-                                except ClientDisconnectedError:
+                                    if page_instance:
+                                        await save_comprehensive_snapshot(
+                                            page=page_instance,
+                                            error_name="stream_post_submit_button_handling_timeout",
+                                            req_id=req_id,
+                                            error_stage="流式响应后按钮状态处理",
+                                            additional_context={
+                                                "headless_mode": os.environ.get("HEADLESS", "true").lower() == "true",
+                                                "completion_event_set": completion_event.is_set() if completion_event else None,
+                                                "client_disconnected_early": client_disconnected_early,
+                                                "error_type": type(e_pw_disabled).__name__,
+                                                "error_message": str(e_pw_disabled)
+                                            },
+                                            locators={
+                                                "submit_button": submit_btn_loc,
+                                                "input_field": page_instance.locator(PROMPT_TEXTAREA_SELECTOR)
+                                            },
+                                            error_exception=e_pw_disabled
+                                        )
+                                except ClientDisconnectedError as e_client_disco:
                                     logger.info(
                                         f"[{req_id}] 客户端在流式响应后按钮状态处理时断开连接。"
                                     )
+                                    # Capture comprehensive snapshot for CLIENT DISCONNECT issue
+                                    from browser_utils.debug_utils import save_comprehensive_snapshot
+                                    from server import page_instance
+                                    from config import PROMPT_TEXTAREA_SELECTOR
+                                    import os
+
+                                    if page_instance:
+                                        await save_comprehensive_snapshot(
+                                            page=page_instance,
+                                            error_name="stream_post_button_check_client_disconnect",
+                                            req_id=req_id,
+                                            error_stage="流式响应后按钮状态检查 - 前置检查",
+                                            additional_context={
+                                                "headless_mode": os.environ.get("HEADLESS", "true").lower() == "true",
+                                                "completion_event_set": completion_event.is_set() if completion_event else None,
+                                                "client_disconnected_early": client_disconnected_early,
+                                                "error_type": "ClientDisconnectedError",
+                                                "error_message": str(e_client_disco),
+                                                "note": "This is the headless mode false positive we're investigating"
+                                            },
+                                            locators={
+                                                "submit_button": submit_btn_loc,
+                                                "input_field": page_instance.locator(PROMPT_TEXTAREA_SELECTOR)
+                                            },
+                                            error_exception=e_client_disco
+                                        )
                             elif completion_event and current_request_was_streaming:
                                 logger.warning(
                                     f"[{req_id}] (Worker) 流式请求但 submit_btn_loc 或 client_disco_checker 未提供。跳过按钮禁用等待。"

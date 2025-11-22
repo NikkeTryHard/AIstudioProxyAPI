@@ -26,6 +26,87 @@ from models import ClientDisconnectedError
 logger = logging.getLogger("AIStudioProxyServer")
 
 
+def _setup_debug_listeners(page: AsyncPage) -> None:
+    """
+    Setup console and network logging listeners for comprehensive error snapshots.
+
+    This function attaches event listeners to capture:
+    - Browser console messages (log, warning, error, etc.)
+    - Network requests and responses
+
+    Args:
+        page: Playwright page instance to attach listeners to
+    """
+    import server
+    from datetime import datetime, timezone
+
+    def handle_console(msg):
+        """Handle console messages from the browser."""
+        try:
+            # Extract location info if available
+            location_str = ""
+            if msg.location:
+                url = msg.location.get("url", "")
+                line = msg.location.get("lineNumber", 0)
+                if url or line:
+                    location_str = f"{url}:{line}"
+
+            server.console_logs.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "type": msg.type,
+                "text": msg.text,
+                "location": location_str
+            })
+
+            # Log errors to our logger as well
+            if msg.type == "error":
+                logger.warning(f"[Browser Console Error] {msg.text}")
+
+        except Exception as e:
+            logger.error(f"Failed to capture console message: {e}")
+
+    def handle_request(request):
+        """Handle network requests."""
+        try:
+            # Only log relevant requests (skip static assets, images, etc.)
+            url_lower = request.url.lower()
+            if any(ext in url_lower for ext in ['.png', '.jpg', '.jpeg', '.gif', '.css', '.woff', '.woff2']):
+                return  # Skip static assets
+
+            server.network_log["requests"].append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "url": request.url,
+                "method": request.method,
+                "resource_type": request.resource_type,
+            })
+        except Exception as e:
+            logger.error(f"Failed to capture network request: {e}")
+
+    def handle_response(response):
+        """Handle network responses."""
+        try:
+            # Only log relevant responses
+            url_lower = response.url.lower()
+            if any(ext in url_lower for ext in ['.png', '.jpg', '.jpeg', '.gif', '.css', '.woff', '.woff2']):
+                return  # Skip static assets
+
+            server.network_log["responses"].append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "url": response.url,
+                "status": response.status,
+                "status_text": response.status_text,
+            })
+        except Exception as e:
+            logger.error(f"Failed to capture network response: {e}")
+
+    # Attach listeners
+    page.on("console", handle_console)
+    page.on("request", handle_request)
+    page.on("response", handle_response)
+
+    logger.info("   ✅ Debug listeners (console + network) attached to page")
+
+
 async def _setup_network_interception_and_scripts(context: AsyncBrowserContext):
     """设置网络拦截和脚本注入"""
     try:
@@ -348,6 +429,8 @@ async def _initialize_page_logic(browser: AsyncBrowser):
                     if found_page:
                         logger.info(f"   为已存在的页面 {found_page.url} 添加模型列表响应监听器。")
                         found_page.on("response", _handle_model_list_response)
+                        # Setup debug listeners for error snapshots
+                        _setup_debug_listeners(found_page)
                     break
             except PlaywrightAsyncError as pw_err_url:
                 logger.warning(f"   检查页面 URL 时出现 Playwright 错误: {pw_err_url}")
@@ -362,6 +445,8 @@ async def _initialize_page_logic(browser: AsyncBrowser):
             if found_page:
                 logger.info(f"   为新创建的页面添加模型列表响应监听器 (导航前)。")
                 found_page.on("response", _handle_model_list_response)
+                # Setup debug listeners for error snapshots
+                _setup_debug_listeners(found_page)
             try:
                 await found_page.goto(target_full_url, wait_until="domcontentloaded", timeout=90000)
                 current_url = found_page.url

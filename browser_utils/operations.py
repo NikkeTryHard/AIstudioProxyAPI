@@ -431,55 +431,17 @@ async def detect_and_extract_page_error(page: AsyncPage, req_id: str) -> Optiona
         return None
 
 async def save_error_snapshot(error_name: str = 'error'):
-    """保存错误快照"""
-    import server
-    name_parts = error_name.split('_')
-    req_id = name_parts[-1] if len(name_parts) > 1 and len(name_parts[-1]) == 7 else None
-    base_error_name = error_name if not req_id else '_'.join(name_parts[:-1])
-    log_prefix = f"[{req_id}]" if req_id else "[无请求ID]"
-    page_to_snapshot = server.page_instance
-    
-    if not server.browser_instance or not server.browser_instance.is_connected() or not page_to_snapshot or page_to_snapshot.is_closed():
-        logger.warning(f"{log_prefix} 无法保存快照 ({base_error_name})，浏览器/页面不可用。")
-        return
-    
-    logger.info(f"{log_prefix} 尝试保存错误快照 ({base_error_name})...")
-    timestamp = int(time.time() * 1000)
-    error_dir = os.path.join(os.path.dirname(__file__), '..', 'errors_py')
-    
-    try:
-        os.makedirs(error_dir, exist_ok=True)
-        filename_suffix = f"{req_id}_{timestamp}" if req_id else f"{timestamp}"
-        filename_base = f"{base_error_name}_{filename_suffix}"
-        screenshot_path = os.path.join(error_dir, f"{filename_base}.png")
-        html_path = os.path.join(error_dir, f"{filename_base}.html")
-        
-        try:
-            await page_to_snapshot.screenshot(path=screenshot_path, full_page=True, timeout=15000)
-            logger.info(f"{log_prefix}   快照已保存到: {screenshot_path}")
-        except Exception as ss_err:
-            logger.error(f"{log_prefix}   保存屏幕截图失败 ({base_error_name}): {ss_err}")
-        
-        try:
-            content = await page_to_snapshot.content()
-            f = None
-            try:
-                f = open(html_path, 'w', encoding='utf-8')
-                f.write(content)
-                logger.info(f"{log_prefix}   HTML 已保存到: {html_path}")
-            except Exception as write_err:
-                logger.error(f"{log_prefix}   保存 HTML 失败 ({base_error_name}): {write_err}")
-            finally:
-                if f:
-                    try:
-                        f.close()
-                        logger.debug(f"{log_prefix}   HTML 文件已正确关闭")
-                    except Exception as close_err:
-                        logger.error(f"{log_prefix}   关闭 HTML 文件时出错: {close_err}")
-        except Exception as html_err:
-            logger.error(f"{log_prefix}   获取页面内容失败 ({base_error_name}): {html_err}")
-    except Exception as dir_err:
-        logger.error(f"{log_prefix}   创建错误目录或保存快照时发生其他错误 ({base_error_name}): {dir_err}")
+    """
+    保存错误快照 (Legacy wrapper).
+
+    DEPRECATED: This function now uses the new comprehensive snapshot system.
+    For new code, use save_comprehensive_snapshot() from debug_utils directly.
+
+    This wrapper maintains backward compatibility while leveraging the enhanced
+    debugging capabilities.
+    """
+    from .debug_utils import save_error_snapshot_legacy
+    await save_error_snapshot_legacy(error_name)
 
 async def get_response_via_edit_button(
     page: AsyncPage,

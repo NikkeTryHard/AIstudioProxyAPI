@@ -120,8 +120,19 @@ worker_task: Optional[Task] = None
 page_params_cache: Dict[str, Any] = {}
 params_cache_lock: Optional[Lock] = None
 
+# --- Debug Logging State (for comprehensive error snapshots) ---
+console_logs: List[Dict[str, Any]] = []
+network_log: Dict[str, List[Dict[str, Any]]] = {"requests": [], "responses": []}
+
 logger = logging.getLogger("AIStudioProxyServer")
 log_ws_manager = None
+
+
+def clear_debug_logs() -> None:
+    """Clear console and network logs (called after each request)."""
+    global console_logs, network_log
+    console_logs = []
+    network_log = {"requests": [], "responses": []}
 
 
 # --- FastAPI App 定义 ---
