@@ -1,6 +1,9 @@
 from typing import Callable, Optional
+
 from playwright.async_api import Page as AsyncPage
+
 from models import ClientDisconnectedError
+
 
 class BaseController:
     """Base controller providing common functionality."""

@@ -77,6 +77,4 @@ GROUNDING_WITH_GOOGLE_SEARCH_TOGGLE_SELECTOR = (
 )
 
 # --- Function Calling ---
-FUNCTION_CALLING_TOGGLE_SELECTOR = (
-    'div[data-test-id="functionCallingTooltip"] mat-slide-toggle button, mat-slide-toggle:has-text("Function calling") button'
-)
+FUNCTION_CALLING_TOGGLE_SELECTOR = 'div[data-test-id="functionCallingTooltip"] mat-slide-toggle button, mat-slide-toggle:has-text("Function calling") button'

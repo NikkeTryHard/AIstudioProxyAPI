@@ -1,6 +1,7 @@
 import asyncio
 import ssl as ssl_module
 import urllib.parse
+
 from aiohttp import TCPConnector
 from python_socks.async_.asyncio import Proxy
 
@@ -27,7 +28,7 @@ class ProxyConnector:
         parsed = urllib.parse.urlparse(self.proxy_url)
         proxy_type = parsed.scheme.lower()
 
-        if proxy_type in ('http', 'https', 'socks4', 'socks5'):
+        if proxy_type in ("http", "https", "socks4", "socks5"):
             self.connector = "SocksConnector"
         else:
             raise ValueError(f"Unsupported proxy type: {proxy_type}")
@@ -54,9 +55,13 @@ class ProxyConnector:
             ssl_context = ssl_module.SSLContext(ssl_module.PROTOCOL_TLS_CLIENT)
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl_module.CERT_NONE
-            ssl_context.minimum_version = ssl_module.TLSVersion.TLSv1_2  # Force TLS 1.2 or higher
-            ssl_context.maximum_version = ssl_module.TLSVersion.TLSv1_3  # Allow TLS 1.3 if supported
-            ssl_context.set_ciphers('DEFAULT@SECLEVEL=2')  # Use secure ciphers
+            ssl_context.minimum_version = (
+                ssl_module.TLSVersion.TLSv1_2
+            )  # Force TLS 1.2 or higher
+            ssl_context.maximum_version = (
+                ssl_module.TLSVersion.TLSv1_3
+            )  # Allow TLS 1.3 if supported
+            ssl_context.set_ciphers("DEFAULT@SECLEVEL=2")  # Use secure ciphers
 
             reader, writer = await asyncio.open_connection(
                 host=None,

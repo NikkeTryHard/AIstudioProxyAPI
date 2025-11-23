@@ -5,38 +5,40 @@ FastAPI应用初始化和生命周期管理
 import asyncio
 import multiprocessing
 import os
-import sys
 import queue  # <-- FIX: Added missing import for queue.Empty
+import sys
+from asyncio import Lock, Queue
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from playwright.async_api import Browser as AsyncBrowser
+from playwright.async_api import Playwright as AsyncPlaywright
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
-from typing import Callable, Awaitable
-from playwright.async_api import Browser as AsyncBrowser, Playwright as AsyncPlaywright
+
+import stream
+
+# --- browser_utils模块导入 ---
+from browser_utils import (
+    _close_page_logic,
+    _handle_initial_model_state_and_storage,
+    _initialize_page_logic,
+    enable_temporary_chat_mode,
+    load_excluded_models,
+)
 
 # --- FIX: Replaced star import with explicit imports ---
-from config import NO_PROXY_ENV, EXCLUDED_MODELS_FILENAME, get_environment_variable
+from config import EXCLUDED_MODELS_FILENAME, NO_PROXY_ENV, get_environment_variable
+
+# --- logging_utils模块导入 ---
+from logging_utils import restore_original_streams, setup_server_logging
+from logging_utils.context_logger import context_logger
 
 # --- models模块导入 ---
 from models import WebSocketConnectionManager
 
-# --- logging_utils模块导入 ---
-from logging_utils import setup_server_logging, restore_original_streams
-
-# --- browser_utils模块导入 ---
-from browser_utils import (
-    _initialize_page_logic,
-    _close_page_logic,
-    load_excluded_models,
-    _handle_initial_model_state_and_storage,
-    enable_temporary_chat_mode
-)
-
-import stream
-from asyncio import Queue, Lock
 from . import auth_utils
 
 # 全局状态变量（这些将在server.py中被引用）
@@ -69,21 +71,25 @@ log_ws_manager = None
 STREAM_QUEUE = None
 STREAM_PROCESS = None
 
+
 # --- Lifespan Context Manager ---
 def _setup_logging():
     import server
-    log_level_env = get_environment_variable('SERVER_LOG_LEVEL', 'INFO')
-    redirect_print_env = get_environment_variable('SERVER_REDIRECT_PRINT', 'false')
+
+    log_level_env = get_environment_variable("SERVER_LOG_LEVEL", "INFO")
+    redirect_print_env = get_environment_variable("SERVER_REDIRECT_PRINT", "false")
     server.log_ws_manager = WebSocketConnectionManager()
     return setup_server_logging(
         logger_instance=server.logger,
         log_ws_manager=server.log_ws_manager,
         log_level_name=log_level_env,
-        redirect_print_str=redirect_print_env
+        redirect_print_str=redirect_print_env,
     )
+
 
 def _initialize_globals():
     import server
+
     server.request_queue = Queue()
     server.processing_lock = Lock()
     server.model_switching_lock = Lock()
@@ -91,37 +97,52 @@ def _initialize_globals():
     auth_utils.initialize_keys()
     server.logger.info("API keys and global locks initialized.")
 
+
 def _initialize_proxy_settings():
     import server
-    STREAM_PORT = get_environment_variable('STREAM_PORT')
-    if STREAM_PORT == '0':
-        PROXY_SERVER_ENV = get_environment_variable('HTTPS_PROXY') or get_environment_variable('HTTP_PROXY')
+
+    STREAM_PORT = get_environment_variable("STREAM_PORT")
+    if STREAM_PORT == "0":
+        PROXY_SERVER_ENV = get_environment_variable(
+            "HTTPS_PROXY"
+        ) or get_environment_variable("HTTP_PROXY")
     else:
         PROXY_SERVER_ENV = f"http://127.0.0.1:{STREAM_PORT or 3120}/"
-    
+
     if PROXY_SERVER_ENV:
-        server.PLAYWRIGHT_PROXY_SETTINGS = {'server': PROXY_SERVER_ENV}
+        server.PLAYWRIGHT_PROXY_SETTINGS = {"server": PROXY_SERVER_ENV}
         if NO_PROXY_ENV:
-            server.PLAYWRIGHT_PROXY_SETTINGS['bypass'] = NO_PROXY_ENV.replace(',', ';')
-        server.logger.info(f"Playwright proxy settings configured: {server.PLAYWRIGHT_PROXY_SETTINGS}")
+            server.PLAYWRIGHT_PROXY_SETTINGS["bypass"] = NO_PROXY_ENV.replace(",", ";")
+        server.logger.info(
+            f"Playwright proxy settings configured: {server.PLAYWRIGHT_PROXY_SETTINGS}"
+        )
     else:
         server.logger.info("No proxy configured for Playwright.")
 
+
 async def _start_stream_proxy():
     import server
-    STREAM_PORT = get_environment_variable('STREAM_PORT')
-    if STREAM_PORT != '0':
+
+    STREAM_PORT = get_environment_variable("STREAM_PORT")
+    if STREAM_PORT != "0":
         port = int(STREAM_PORT or 3120)
         STREAM_PROXY_SERVER_ENV = (
-            get_environment_variable('UNIFIED_PROXY_CONFIG')
-            or get_environment_variable('HTTPS_PROXY')
-            or get_environment_variable('HTTP_PROXY')
+            get_environment_variable("UNIFIED_PROXY_CONFIG")
+            or get_environment_variable("HTTPS_PROXY")
+            or get_environment_variable("HTTP_PROXY")
         )
-        server.logger.info(f"Starting STREAM proxy on port {port} with upstream proxy: {STREAM_PROXY_SERVER_ENV}")
+        server.logger.info(
+            f"Starting STREAM proxy on port {port} with upstream proxy: {STREAM_PROXY_SERVER_ENV}"
+        )
         server.STREAM_QUEUE = multiprocessing.Queue()
-        server.STREAM_PROCESS = multiprocessing.Process(target=stream.start, args=(server.STREAM_QUEUE, port, STREAM_PROXY_SERVER_ENV))
+        server.STREAM_PROCESS = multiprocessing.Process(
+            target=stream.start,
+            args=(server.STREAM_QUEUE, port, STREAM_PROXY_SERVER_ENV),
+        )
         server.STREAM_PROCESS.start()
-        server.logger.info("STREAM proxy process started. Waiting for 'READY' signal...")
+        server.logger.info(
+            "STREAM proxy process started. Waiting for 'READY' signal..."
+        )
 
         # --- FIX: Wait for the proxy to be ready ---
         try:
@@ -131,48 +152,60 @@ async def _start_stream_proxy():
             if ready_signal == "READY":
                 server.logger.info("✅ Received 'READY' signal from STREAM proxy.")
             else:
-                server.logger.warning(f"Received unexpected signal from proxy: {ready_signal}")
+                server.logger.warning(
+                    f"Received unexpected signal from proxy: {ready_signal}"
+                )
         except queue.Empty:
-            server.logger.error("❌ Timed out waiting for STREAM proxy to become ready. Startup will likely fail.")
+            server.logger.error(
+                "❌ Timed out waiting for STREAM proxy to become ready. Startup will likely fail."
+            )
             raise RuntimeError("STREAM proxy failed to start in time.")
 
+
 async def _initialize_browser_and_page():
-    import server
     from playwright.async_api import async_playwright
-    
+
+    import server
+
     server.logger.info("Starting Playwright...")
     server.playwright_manager = await async_playwright().start()
     server.is_playwright_ready = True
     server.logger.info("Playwright started.")
 
-    ws_endpoint = get_environment_variable('CAMOUFOX_WS_ENDPOINT')
-    launch_mode = get_environment_variable('LAUNCH_MODE', 'unknown')
+    ws_endpoint = get_environment_variable("CAMOUFOX_WS_ENDPOINT")
+    launch_mode = get_environment_variable("LAUNCH_MODE", "unknown")
 
     if not ws_endpoint and launch_mode != "direct_debug_no_browser":
         raise ValueError("CAMOUFOX_WS_ENDPOINT environment variable is missing.")
 
     if ws_endpoint:
         server.logger.info(f"Connecting to browser at: {ws_endpoint}")
-        server.browser_instance = await server.playwright_manager.firefox.connect(ws_endpoint, timeout=30000)
+        server.browser_instance = await server.playwright_manager.firefox.connect(
+            ws_endpoint, timeout=30000
+        )
         server.is_browser_connected = True
         server.logger.info(f"Connected to browser: {server.browser_instance.version}")
-        
-        server.page_instance, server.is_page_ready = await _initialize_page_logic(server.browser_instance)
+
+        server.page_instance, server.is_page_ready = await _initialize_page_logic(
+            server.browser_instance
+        )
         if server.is_page_ready:
             await _handle_initial_model_state_and_storage(server.page_instance)
             await enable_temporary_chat_mode(server.page_instance)
             server.logger.info("Page initialized successfully.")
         else:
             server.logger.error("Page initialization failed.")
-    
+
     if not server.model_list_fetch_event.is_set():
         server.model_list_fetch_event.set()
 
+
 async def _shutdown_resources():
     import server
+
     logger = server.logger
     logger.info("Shutting down resources...")
-    
+
     if server.STREAM_PROCESS:
         server.STREAM_PROCESS.terminate()
         logger.info("STREAM proxy terminated.")
@@ -187,14 +220,15 @@ async def _shutdown_resources():
 
     if server.page_instance:
         await _close_page_logic()
-    
+
     if server.browser_instance and server.browser_instance.is_connected():
         await server.browser_instance.close()
         logger.info("Browser connection closed.")
-    
+
     if server.playwright_manager:
         await server.playwright_manager.stop()
         logger.info("Playwright stopped.")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -209,15 +243,15 @@ async def lifespan(app: FastAPI):
     _initialize_globals()
     _initialize_proxy_settings()
     load_excluded_models(EXCLUDED_MODELS_FILENAME)
-    
+
     server.is_initializing = True
     logger.info("Starting AI Studio Proxy Server...")
 
     try:
         await _start_stream_proxy()
         await _initialize_browser_and_page()
-        
-        launch_mode = get_environment_variable('LAUNCH_MODE', 'unknown')
+
+        launch_mode = get_environment_variable("LAUNCH_MODE", "unknown")
         if server.is_page_ready or launch_mode == "direct_debug_no_browser":
             server.worker_task = asyncio.create_task(queue_worker())
             logger.info("Request processing worker started.")
@@ -249,10 +283,12 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
             "/openapi.json",
             # FastAPI 自动生成的其他文档路径
             "/redoc",
-            "/favicon.ico"
+            "/favicon.ico",
         ]
 
-    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable]):
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable]
+    ):
         if not auth_utils.API_KEYS:  # 如果 API_KEYS 为空，则不进行验证
             return await call_next(request)
 
@@ -262,7 +298,9 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
 
         # 检查是否是排除的路径
         for excluded_path in self.excluded_paths:
-            if request.url.path == excluded_path or request.url.path.startswith(excluded_path + "/"):
+            if request.url.path == excluded_path or request.url.path.startswith(
+                excluded_path + "/"
+            ):
                 return await call_next(request)
 
         # 支持多种认证头格式以兼容OpenAI标准
@@ -285,11 +323,51 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
                         "message": "Invalid or missing API key. Please provide a valid API key using 'Authorization: Bearer <your_key>' or 'X-API-Key: <your_key>' header.",
                         "type": "invalid_request_error",
                         "param": None,
-                        "code": "invalid_api_key"
+                        "code": "invalid_api_key",
                     }
-                }
+                },
             )
         return await call_next(request)
+
+
+class GlobalExceptionContextMiddleware(BaseHTTPMiddleware):
+    """Middleware to capture unhandled exceptions with full context."""
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable]
+    ):
+        try:
+            return await call_next(request)
+        except Exception as exc:
+            # Capture rich context
+            try:
+                import server
+
+                logger = server.logger
+
+                request_context = {
+                    "method": request.method,
+                    "url": str(request.url),
+                    "headers": dict(request.headers),
+                    "client": request.client.host if request.client else None,
+                    "query_params": dict(request.query_params),
+                }
+
+                # Note: Reading body in middleware is risky as it consumes the stream.
+                # We skip body for now to be safe.
+
+                saved_path = context_logger.capture_exception(
+                    exc, request_context=request_context
+                )
+                if saved_path:
+                    logger.error(f"Error context dumped to: {saved_path}")
+            except Exception as e:
+                # Use sys.stderr directly if logger is not available or fails
+                print(f"Failed to dump error context: {e}", file=sys.stderr)
+
+            # Re-raise so FastAPI can handle the error response
+            raise exc
+
 
 def create_app() -> FastAPI:
     """创建FastAPI应用实例"""
@@ -297,22 +375,36 @@ def create_app() -> FastAPI:
         title="AI Studio Proxy Server (集成模式)",
         description="通过 Playwright与 AI Studio 交互的代理服务器。",
         version="0.6.0-integrated",
-        lifespan=lifespan
+        lifespan=lifespan,
     )
-    
+
+    # Add exception context middleware FIRST so it catches everything
+    app.add_middleware(GlobalExceptionContextMiddleware)
+
     # 添加中间件
     app.add_middleware(APIKeyAuthMiddleware)
 
     # 注册路由
     # Import aggregated modular routers
-    from .routers import (
-        read_index, get_css, get_js, get_api_info,
-        health_check, list_models, chat_completions,
-        cancel_request, get_queue_status, websocket_log_endpoint,
-        get_api_keys, add_api_key, test_api_key, delete_api_key
-    )
     from fastapi.responses import FileResponse
-    
+
+    from .routers import (
+        add_api_key,
+        cancel_request,
+        chat_completions,
+        delete_api_key,
+        get_api_info,
+        get_api_keys,
+        get_css,
+        get_js,
+        get_queue_status,
+        health_check,
+        list_models,
+        read_index,
+        test_api_key,
+        websocket_log_endpoint,
+    )
+
     app.get("/", response_class=FileResponse)(read_index)
     app.get("/webui.css")(get_css)
     app.get("/webui.js")(get_js)

@@ -5,6 +5,7 @@ from typing import Callable, List, Optional
 
 from playwright.async_api import expect as expect_async
 
+from browser_utils.debug_utils import capture_error_snapshot
 from browser_utils.operations import save_error_snapshot
 from config import (
     PROMPT_TEXTAREA_SELECTOR,
@@ -19,6 +20,7 @@ from .base import BaseController
 class InputController(BaseController):
     """Handles prompt input and submission."""
 
+    @capture_error_snapshot
     async def submit_prompt(
         self,
         prompt: str,
@@ -131,6 +133,7 @@ class InputController(BaseController):
                 await save_error_snapshot(f"input_submit_error_{self.req_id}")
             raise
 
+    @capture_error_snapshot
     async def inject_functions(self, functions_json: str) -> None:
         """注入函数定义到 Google AI Studio UI (v3 Refined + v4 Tab Switch + v5 Optimized Waits)。"""
         self.logger.info(f"[{self.req_id}] 正在注入函数定义...")
@@ -147,7 +150,9 @@ class InputController(BaseController):
 
                 # Smart Wait: Wait for editor to appear
                 try:
-                    await expect_async(self.page.locator(EDITOR_TEXTAREA_SELECTOR).first).to_be_visible(timeout=3000)
+                    await expect_async(
+                        self.page.locator(EDITOR_TEXTAREA_SELECTOR).first
+                    ).to_be_visible(timeout=3000)
                 except Exception:
                     self.logger.warning(f"[{self.req_id}] 等待编辑器出现超时，尝试继续...")
             else:
@@ -173,7 +178,9 @@ class InputController(BaseController):
                         self.logger.info(f"[{self.req_id}] 检测到代码编辑器未选中，正在切换...")
                         await code_tab.click()
                         # Smart wait for tab selection
-                        await expect_async(code_tab).to_have_attribute("aria-selected", "true", timeout=3000)
+                        await expect_async(code_tab).to_have_attribute(
+                            "aria-selected", "true", timeout=3000
+                        )
                     else:
                         self.logger.info(f"[{self.req_id}] 代码编辑器标签页已选中。")
                 else:
@@ -313,6 +320,7 @@ class InputController(BaseController):
             self.logger.error(f"[{self.req_id}] 通过上传菜单设置文件失败: {e}")
             return False
 
+    @capture_error_snapshot
     async def submit_tool_outputs(
         self, tool_outputs: List[dict], check_client_disconnected: Callable
     ):

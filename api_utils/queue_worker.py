@@ -5,11 +5,13 @@
 
 import asyncio
 import time
-from fastapi import HTTPException
 from typing import Any, Dict, Optional, Tuple
+
+from fastapi import HTTPException
+
 from .error_utils import (
-    client_disconnected,
     client_cancelled,
+    client_disconnected,
     processing_timeout,
     server_error,
 )
@@ -20,10 +22,10 @@ async def queue_worker() -> None:
     # 导入全局变量
     from server import (
         logger,
-        request_queue,
-        processing_lock,
         model_switching_lock,
         params_cache_lock,
+        processing_lock,
+        request_queue,
     )
 
     logger.info("--- 队列 Worker 已启动 ---")
@@ -126,9 +128,7 @@ async def queue_worker() -> None:
             if request_item.get("cancelled", False):
                 logger.info(f"[{req_id}] (Worker) 请求已取消，跳过。")
                 if not result_future.done():
-                    result_future.set_exception(
-                        client_cancelled(req_id, "请求已被用户取消")
-                    )
+                    result_future.set_exception(client_cancelled(req_id, "请求已被用户取消"))
                 request_queue.task_done()
                 continue
 
@@ -142,9 +142,7 @@ async def queue_worker() -> None:
 
             is_connected = await _test_client_connection(req_id, http_request)
             if not is_connected:
-                logger.info(
-                    f"[{req_id}] (Worker) ✅ 主动检测到客户端已断开，跳过处理节省资源"
-                )
+                logger.info(f"[{req_id}] (Worker) ✅ 主动检测到客户端已断开，跳过处理节省资源")
                 if not result_future.done():
                     result_future.set_exception(
                         HTTPException(
@@ -165,22 +163,16 @@ async def queue_worker() -> None:
                 delay_time = max(
                     0.5, 1.0 - (current_time - last_request_completion_time)
                 )
-                logger.info(
-                    f"[{req_id}] (Worker) 连续流式请求，添加 {delay_time:.2f}s 延迟..."
-                )
+                logger.info(f"[{req_id}] (Worker) 连续流式请求，添加 {delay_time:.2f}s 延迟...")
                 await asyncio.sleep(delay_time)
 
             # 等待锁前再次主动检测客户端连接
             is_connected = await _test_client_connection(req_id, http_request)
             if not is_connected:
-                logger.info(
-                    f"[{req_id}] (Worker) ✅ 等待锁时检测到客户端断开，取消处理"
-                )
+                logger.info(f"[{req_id}] (Worker) ✅ 等待锁时检测到客户端断开，取消处理")
                 if not result_future.done():
                     result_future.set_exception(
-                        HTTPException(
-                            status_code=499, detail=f"[{req_id}] 客户端关闭了请求"
-                        )
+                        HTTPException(status_code=499, detail=f"[{req_id}] 客户端关闭了请求")
                     )
                 request_queue.task_done()
                 continue
@@ -192,9 +184,7 @@ async def queue_worker() -> None:
                 # 获取锁后最终主动检测客户端连接
                 is_connected = await _test_client_connection(req_id, http_request)
                 if not is_connected:
-                    logger.info(
-                        f"[{req_id}] (Worker) ✅ 获取锁后检测到客户端断开，取消处理"
-                    )
+                    logger.info(f"[{req_id}] (Worker) ✅ 获取锁后检测到客户端断开，取消处理")
                     if not result_future.done():
                         result_future.set_exception(
                             HTTPException(
@@ -202,9 +192,7 @@ async def queue_worker() -> None:
                             )
                         )
                 elif result_future.done():
-                    logger.info(
-                        f"[{req_id}] (Worker) Future 在处理前已完成/取消。跳过。"
-                    )
+                    logger.info(f"[{req_id}] (Worker) Future 在处理前已完成/取消。跳过。")
                 else:
                     # 调用实际的请求处理函数
                     try:
@@ -214,7 +202,12 @@ async def queue_worker() -> None:
                             req_id, request_data, http_request, result_future
                         )
 
-                        completion_event, submit_btn_loc, client_disco_checker, has_tool_calls = (
+                        (
+                            completion_event,
+                            submit_btn_loc,
+                            client_disco_checker,
+                            has_tool_calls,
+                        ) = (
                             None,
                             None,
                             None,
@@ -227,9 +220,18 @@ async def queue_worker() -> None:
                             and len(returned_value) >= 3
                         ):
                             if len(returned_value) == 4:
-                                completion_event, submit_btn_loc, client_disco_checker, has_tool_calls = returned_value
+                                (
+                                    completion_event,
+                                    submit_btn_loc,
+                                    client_disco_checker,
+                                    has_tool_calls,
+                                ) = returned_value
                             else:
-                                completion_event, submit_btn_loc, client_disco_checker = returned_value
+                                (
+                                    completion_event,
+                                    submit_btn_loc,
+                                    client_disco_checker,
+                                ) = returned_value
                                 has_tool_calls = False
 
                             if completion_event is not None:
@@ -256,9 +258,7 @@ async def queue_worker() -> None:
                         # 统一的客户端断开检测和响应处理
                         if completion_event:
                             # 流式模式：等待流式生成器完成信号
-                            logger.info(
-                                f"[{req_id}] (Worker) 等待流式生成器完成信号..."
-                            )
+                            logger.info(f"[{req_id}] (Worker) 等待流式生成器完成信号...")
 
                             # 创建一个增强的客户端断开检测器，支持提前done信号触发
                             client_disconnected_early = False
@@ -293,9 +293,7 @@ async def queue_worker() -> None:
                             )
                         else:
                             # 非流式模式：等待处理完成并检测客户端断开
-                            logger.info(
-                                f"[{req_id}] (Worker) 非流式模式，等待处理完成..."
-                            )
+                            logger.info(f"[{req_id}] (Worker) 非流式模式，等待处理完成...")
 
                             client_disconnected_early = False
 
@@ -360,9 +358,7 @@ async def queue_worker() -> None:
 
                             # 如果客户端提前断开，跳过按钮状态处理
                             if client_disconnected_early:
-                                logger.info(
-                                    f"[{req_id}] (Worker) 客户端提前断开，跳过按钮状态处理"
-                                )
+                                logger.info(f"[{req_id}] (Worker) 客户端提前断开，跳过按钮状态处理")
                             elif (
                                 submit_btn_loc
                                 and client_disco_checker
@@ -377,20 +373,17 @@ async def queue_worker() -> None:
                                     from playwright.async_api import (
                                         expect as expect_async,
                                     )
+
                                     from api_utils.request_processor import (
                                         ClientDisconnectedError,
                                     )
 
                                     # 检查客户端连接状态
-                                    client_disco_checker(
-                                        "流式响应后按钮状态检查 - 前置检查: "
-                                    )
+                                    client_disco_checker("流式响应后按钮状态检查 - 前置检查: ")
                                     await asyncio.sleep(0.5)  # 给UI一点时间更新
 
                                     # 检查按钮是否仍然启用，如果启用则直接点击停止
-                                    logger.info(
-                                        f"[{req_id}] (Worker) 检查发送按钮状态..."
-                                    )
+                                    logger.info(f"[{req_id}] (Worker) 检查发送按钮状态...")
                                     try:
                                         is_button_enabled = (
                                             await submit_btn_loc.is_enabled(
@@ -422,9 +415,7 @@ async def queue_worker() -> None:
                                         )
 
                                     # 等待按钮最终禁用
-                                    logger.info(
-                                        f"[{req_id}] (Worker) 等待发送按钮最终禁用..."
-                                    )
+                                    logger.info(f"[{req_id}] (Worker) 等待发送按钮最终禁用...")
                                     await expect_async(submit_btn_loc).to_be_disabled(
                                         timeout=wait_timeout_ms
                                     )
@@ -435,10 +426,13 @@ async def queue_worker() -> None:
                                         f"[{req_id}] ⚠️ 流式响应后按钮状态处理超时或错误: {e_pw_disabled}"
                                     )
                                     # Use comprehensive snapshot for better debugging
-                                    from browser_utils.debug_utils import save_comprehensive_snapshot
-                                    from server import page_instance
-                                    from config import PROMPT_TEXTAREA_SELECTOR
                                     import os
+
+                                    from browser_utils.debug_utils import (
+                                        save_comprehensive_snapshot,
+                                    )
+                                    from config import PROMPT_TEXTAREA_SELECTOR
+                                    from server import page_instance
 
                                     if page_instance:
                                         await save_comprehensive_snapshot(
@@ -447,27 +441,37 @@ async def queue_worker() -> None:
                                             req_id=req_id,
                                             error_stage="流式响应后按钮状态处理",
                                             additional_context={
-                                                "headless_mode": os.environ.get("HEADLESS", "true").lower() == "true",
-                                                "completion_event_set": completion_event.is_set() if completion_event else None,
+                                                "headless_mode": os.environ.get(
+                                                    "HEADLESS", "true"
+                                                ).lower()
+                                                == "true",
+                                                "completion_event_set": completion_event.is_set()
+                                                if completion_event
+                                                else None,
                                                 "client_disconnected_early": client_disconnected_early,
-                                                "error_type": type(e_pw_disabled).__name__,
-                                                "error_message": str(e_pw_disabled)
+                                                "error_type": type(
+                                                    e_pw_disabled
+                                                ).__name__,
+                                                "error_message": str(e_pw_disabled),
                                             },
                                             locators={
                                                 "submit_button": submit_btn_loc,
-                                                "input_field": page_instance.locator(PROMPT_TEXTAREA_SELECTOR)
+                                                "input_field": page_instance.locator(
+                                                    PROMPT_TEXTAREA_SELECTOR
+                                                ),
                                             },
-                                            error_exception=e_pw_disabled
+                                            error_exception=e_pw_disabled,
                                         )
                                 except ClientDisconnectedError as e_client_disco:
-                                    logger.info(
-                                        f"[{req_id}] 客户端在流式响应后按钮状态处理时断开连接。"
-                                    )
+                                    logger.info(f"[{req_id}] 客户端在流式响应后按钮状态处理时断开连接。")
                                     # Capture comprehensive snapshot for CLIENT DISCONNECT issue
-                                    from browser_utils.debug_utils import save_comprehensive_snapshot
-                                    from server import page_instance
-                                    from config import PROMPT_TEXTAREA_SELECTOR
                                     import os
+
+                                    from browser_utils.debug_utils import (
+                                        save_comprehensive_snapshot,
+                                    )
+                                    from config import PROMPT_TEXTAREA_SELECTOR
+                                    from server import page_instance
 
                                     if page_instance:
                                         await save_comprehensive_snapshot(
@@ -476,18 +480,25 @@ async def queue_worker() -> None:
                                             req_id=req_id,
                                             error_stage="流式响应后按钮状态检查 - 前置检查",
                                             additional_context={
-                                                "headless_mode": os.environ.get("HEADLESS", "true").lower() == "true",
-                                                "completion_event_set": completion_event.is_set() if completion_event else None,
+                                                "headless_mode": os.environ.get(
+                                                    "HEADLESS", "true"
+                                                ).lower()
+                                                == "true",
+                                                "completion_event_set": completion_event.is_set()
+                                                if completion_event
+                                                else None,
                                                 "client_disconnected_early": client_disconnected_early,
                                                 "error_type": "ClientDisconnectedError",
                                                 "error_message": str(e_client_disco),
-                                                "note": "This is the headless mode false positive we're investigating"
+                                                "note": "This is the headless mode false positive we're investigating",
                                             },
                                             locators={
                                                 "submit_button": submit_btn_loc,
-                                                "input_field": page_instance.locator(PROMPT_TEXTAREA_SELECTOR)
+                                                "input_field": page_instance.locator(
+                                                    PROMPT_TEXTAREA_SELECTOR
+                                                ),
                                             },
-                                            error_exception=e_client_disco
+                                            error_exception=e_client_disco,
                                         )
                             elif completion_event and current_request_was_streaming:
                                 logger.warning(
@@ -549,21 +560,21 @@ async def queue_worker() -> None:
                         # 无论是否有工具调用，都清空聊天历史，以支持无状态的文本提交模式
                         # if has_tool_calls: ... (removed logic)
 
-                        from server import page_instance, is_page_ready
+                        from server import is_page_ready, page_instance
 
                         if page_instance and is_page_ready:
-                                from browser_utils.page_controller import PageController
+                            from browser_utils.page_controller import PageController
 
-                                page_controller = PageController(
-                                    page_instance, logger, req_id
-                                )
-                                logger.info(
-                                    f"[{req_id}] (Worker) 执行聊天历史清空（{'流式' if completion_event else '非流式'}模式）..."
-                                )
-                                await page_controller.clear_chat_history(
-                                    client_disco_checker
-                                )
-                                logger.info(f"[{req_id}] (Worker) ✅ 聊天历史清空完成。")
+                            page_controller = PageController(
+                                page_instance, logger, req_id
+                            )
+                            logger.info(
+                                f"[{req_id}] (Worker) 执行聊天历史清空（{'流式' if completion_event else '非流式'}模式）..."
+                            )
+                            await page_controller.clear_chat_history(
+                                client_disco_checker
+                            )
+                            logger.info(f"[{req_id}] (Worker) ✅ 聊天历史清空完成。")
                     else:
                         logger.info(
                             f"[{req_id}] (Worker) 跳过聊天历史清空：缺少必要参数（submit_btn_loc: {bool(submit_btn_loc)}, client_disco_checker: {bool(client_disco_checker)}）"
@@ -585,13 +596,9 @@ async def queue_worker() -> None:
                 result_future.cancel("Worker cancelled")
             break
         except Exception as e:
-            logger.error(
-                f"[{req_id}] (Worker) ❌ 处理请求时发生意外错误: {e}", exc_info=True
-            )
+            logger.error(f"[{req_id}] (Worker) ❌ 处理请求时发生意外错误: {e}", exc_info=True)
             if result_future and not result_future.done():
-                result_future.set_exception(
-                    server_error(req_id, f"服务器内部错误: {e}")
-                )
+                result_future.set_exception(server_error(req_id, f"服务器内部错误: {e}"))
         finally:
             if request_item:
                 request_queue.task_done()

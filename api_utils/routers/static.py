@@ -1,10 +1,13 @@
-import os
 import logging
+import os
+
 from fastapi import Depends, HTTPException
 from fastapi.responses import FileResponse
+
 from ..dependencies import get_logger
 
 _BASE_DIR = os.path.join(os.path.dirname(__file__), "..", "..")
+
 
 def _static_path(name: str) -> str:
     return os.path.join(_BASE_DIR, name)
@@ -32,4 +35,3 @@ async def get_js(logger: logging.Logger = Depends(get_logger)):
         logger.error(f"webui.js not found at {js_path}")
         raise HTTPException(status_code=404, detail="webui.js not found")
     return FileResponse(js_path, media_type="application/javascript")
-

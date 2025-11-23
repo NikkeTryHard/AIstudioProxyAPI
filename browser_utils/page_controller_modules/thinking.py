@@ -1,9 +1,15 @@
 import asyncio
 from typing import Any, Callable, Dict, Optional
 
-from playwright.async_api import expect as expect_async
 from playwright.async_api import TimeoutError
+from playwright.async_api import expect as expect_async
 
+from browser_utils.debug_utils import capture_error_snapshot
+from browser_utils.operations import save_error_snapshot
+from browser_utils.thinking_normalizer import (
+    format_directive_log,
+    normalize_reasoning_effort,
+)
 from config import (
     CLICK_TIMEOUT_MS,
     ENABLE_THINKING_MODE_TOGGLE_SELECTOR,
@@ -14,16 +20,19 @@ from config import (
     THINKING_LEVEL_SELECT_SELECTOR,
 )
 from models import ClientDisconnectedError
-from browser_utils.thinking_normalizer import format_directive_log, normalize_reasoning_effort
-from browser_utils.operations import save_error_snapshot
+
 from .base import BaseController
 
 
 class ThinkingController(BaseController):
     """Handles thinking mode and budget logic."""
 
+    @capture_error_snapshot
     async def _handle_thinking_budget(
-        self, request_params: Dict[str, Any], model_id_to_use: Optional[str], check_client_disconnected: Callable
+        self,
+        request_params: Dict[str, Any],
+        model_id_to_use: Optional[str],
+        check_client_disconnected: Callable,
     ):
         """处理思考模式和预算的调整逻辑。
 
@@ -37,7 +46,10 @@ class ThinkingController(BaseController):
         directive = normalize_reasoning_effort(reasoning_effort)
         self.logger.info(f"[{self.req_id}] 思考模式指令: {format_directive_log(directive)}")
 
-        uses_level = self._uses_thinking_level(model_id_to_use) and await self._has_thinking_dropdown()
+        uses_level = (
+            self._uses_thinking_level(model_id_to_use)
+            and await self._has_thinking_dropdown()
+        )
 
         def _should_enable_from_raw(rv: Any) -> bool:
             try:
@@ -53,11 +65,15 @@ class ThinkingController(BaseController):
                 return False
             return False
 
-        desired_enabled = directive.thinking_enabled or _should_enable_from_raw(reasoning_effort)
+        desired_enabled = directive.thinking_enabled or _should_enable_from_raw(
+            reasoning_effort
+        )
 
         has_main_toggle = self._model_has_main_thinking_toggle(model_id_to_use)
         if has_main_toggle:
-            self.logger.info(f"[{self.req_id}] 开始设置主思考开关到: {'开启' if desired_enabled else '关闭'}")
+            self.logger.info(
+                f"[{self.req_id}] 开始设置主思考开关到: {'开启' if desired_enabled else '关闭'}"
+            )
             await self._control_thinking_mode_toggle(
                 should_be_enabled=desired_enabled,
                 check_client_disconnected=check_client_disconnected,
@@ -68,7 +84,7 @@ class ThinkingController(BaseController):
         if not desired_enabled:
             # 跳过无预算开关的模型
             if self._uses_thinking_level(model_id_to_use):
-                 return
+                return
             # 若关闭思考，则确保预算开关关闭（兼容旧UI）
             await self._control_thinking_budget_toggle(
                 should_be_checked=False,
@@ -141,9 +157,7 @@ class ThinkingController(BaseController):
                 value_to_set = min(value_to_set, 24576)
             elif "flash" in model_lower:
                 value_to_set = min(value_to_set, 24576)
-            self.logger.info(
-                f"[{self.req_id}] 开启手动预算限制并设置预算值: {value_to_set} tokens"
-            )
+            self.logger.info(f"[{self.req_id}] 开启手动预算限制并设置预算值: {value_to_set} tokens")
             await self._control_thinking_budget_toggle(
                 should_be_checked=True,
                 check_client_disconnected=check_client_disconnected,
@@ -306,7 +320,9 @@ class ThinkingController(BaseController):
 
             # 验证
             try:
-                await expect_async(budget_input_locator).to_have_value(str(adjusted_budget), timeout=3000)
+                await expect_async(budget_input_locator).to_have_value(
+                    str(adjusted_budget), timeout=3000
+                )
                 self.logger.info(f"[{self.req_id}] ✅ 思考预算已成功更新为: {adjusted_budget}")
             except Exception:
                 new_value_str = await budget_input_locator.input_value(timeout=3000)
@@ -320,7 +336,9 @@ class ThinkingController(BaseController):
                     # 最后回退：如果页面仍然小于请求值，尝试按页面 max 进行填充
                     try:
                         page_max_str = await budget_input_locator.get_attribute("max")
-                        page_max_val = int(page_max_str) if page_max_str is not None else None
+                        page_max_val = (
+                            int(page_max_str) if page_max_str is not None else None
+                        )
                     except Exception:
                         page_max_val = None
                     if page_max_val is not None and page_max_val < adjusted_budget:
@@ -346,7 +364,9 @@ class ThinkingController(BaseController):
                             pass
                         await budget_input_locator.fill(str(page_max_val), timeout=5000)
                         try:
-                            await expect_async(budget_input_locator).to_have_value(str(page_max_val), timeout=2000)
+                            await expect_async(budget_input_locator).to_have_value(
+                                str(page_max_val), timeout=2000
+                            )
                         except Exception:
                             pass
                     else:
@@ -400,8 +420,10 @@ class ThinkingController(BaseController):
                     await toggle_locator.click(timeout=CLICK_TIMEOUT_MS)
                 except Exception:
                     try:
-                        root = self.page.locator('mat-slide-toggle[data-test-toggle="enable-thinking"]')
-                        label = root.locator('label.mdc-label')
+                        root = self.page.locator(
+                            'mat-slide-toggle[data-test-toggle="enable-thinking"]'
+                        )
+                        label = root.locator("label.mdc-label")
                         await expect_async(label).to_be_visible(timeout=2000)
                         await label.click(timeout=CLICK_TIMEOUT_MS)
                     except Exception:
@@ -472,8 +494,10 @@ class ThinkingController(BaseController):
                     await toggle_locator.click(timeout=CLICK_TIMEOUT_MS)
                 except Exception:
                     try:
-                        root = self.page.locator('mat-slide-toggle[data-test-toggle="manual-budget"]')
-                        label = root.locator('label.mdc-label')
+                        root = self.page.locator(
+                            'mat-slide-toggle[data-test-toggle="manual-budget"]'
+                        )
+                        label = root.locator("label.mdc-label")
                         await expect_async(label).to_be_visible(timeout=2000)
                         await label.click(timeout=CLICK_TIMEOUT_MS)
                     except Exception:

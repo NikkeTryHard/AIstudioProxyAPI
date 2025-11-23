@@ -1,4 +1,5 @@
-from typing import Any, Optional, List, TypedDict
+from typing import Any, List, Optional, TypedDict
+
 from playwright.async_api import Page as AsyncPage
 
 
@@ -16,4 +17,3 @@ class RequestContext(TypedDict, total=False):
     requested_model: Optional[str]
     model_id_to_use: Optional[str]
     needs_model_switching: bool
-

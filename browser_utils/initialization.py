@@ -2,24 +2,28 @@
 # 浏览器初始化相关功能模块
 
 import asyncio
-import os
-import time
 import json
 import logging
-from typing import Optional, Any, Dict, Tuple
+import os
+import time
+from typing import Any, Dict, Optional, Tuple
 
-from playwright.async_api import Page as AsyncPage, Browser as AsyncBrowser, BrowserContext as AsyncBrowserContext, Error as PlaywrightAsyncError, expect as expect_async
+from playwright.async_api import Browser as AsyncBrowser
+from playwright.async_api import BrowserContext as AsyncBrowserContext
+from playwright.async_api import Error as PlaywrightAsyncError
+from playwright.async_api import Page as AsyncPage
+from playwright.async_api import expect as expect_async
 
 # 导入配置和模型
 from config import (
     AI_STUDIO_URL_PATTERN,
-    USER_INPUT_START_MARKER_SERVER,
-    USER_INPUT_END_MARKER_SERVER,
-    INPUT_SELECTOR,
+    AUTH_SAVE_TIMEOUT,
     AUTO_CONFIRM_LOGIN,
     AUTO_SAVE_AUTH,
-    AUTH_SAVE_TIMEOUT,
+    INPUT_SELECTOR,
     SAVED_AUTH_DIR,
+    USER_INPUT_END_MARKER_SERVER,
+    USER_INPUT_START_MARKER_SERVER,
 )
 from models import ClientDisconnectedError
 
@@ -37,8 +41,9 @@ def _setup_debug_listeners(page: AsyncPage) -> None:
     Args:
         page: Playwright page instance to attach listeners to
     """
-    import server
     from datetime import datetime, timezone
+
+    import server
 
     def handle_console(msg):
         """Handle console messages from the browser."""
@@ -51,12 +56,14 @@ def _setup_debug_listeners(page: AsyncPage) -> None:
                 if url or line:
                     location_str = f"{url}:{line}"
 
-            server.console_logs.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "type": msg.type,
-                "text": msg.text,
-                "location": location_str
-            })
+            server.console_logs.append(
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "type": msg.type,
+                    "text": msg.text,
+                    "location": location_str,
+                }
+            )
 
             # Log errors to our logger as well
             if msg.type == "error":
@@ -70,15 +77,20 @@ def _setup_debug_listeners(page: AsyncPage) -> None:
         try:
             # Only log relevant requests (skip static assets, images, etc.)
             url_lower = request.url.lower()
-            if any(ext in url_lower for ext in ['.png', '.jpg', '.jpeg', '.gif', '.css', '.woff', '.woff2']):
+            if any(
+                ext in url_lower
+                for ext in [".png", ".jpg", ".jpeg", ".gif", ".css", ".woff", ".woff2"]
+            ):
                 return  # Skip static assets
 
-            server.network_log["requests"].append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "url": request.url,
-                "method": request.method,
-                "resource_type": request.resource_type,
-            })
+            server.network_log["requests"].append(
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "url": request.url,
+                    "method": request.method,
+                    "resource_type": request.resource_type,
+                }
+            )
         except Exception as e:
             logger.error(f"Failed to capture network request: {e}")
 
@@ -87,15 +99,20 @@ def _setup_debug_listeners(page: AsyncPage) -> None:
         try:
             # Only log relevant responses
             url_lower = response.url.lower()
-            if any(ext in url_lower for ext in ['.png', '.jpg', '.jpeg', '.gif', '.css', '.woff', '.woff2']):
+            if any(
+                ext in url_lower
+                for ext in [".png", ".jpg", ".jpeg", ".gif", ".css", ".woff", ".woff2"]
+            ):
                 return  # Skip static assets
 
-            server.network_log["responses"].append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "url": response.url,
-                "status": response.status,
-                "status_text": response.status_text,
-            })
+            server.network_log["responses"].append(
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "url": response.url,
+                    "status": response.status,
+                    "status_text": response.status_text,
+                }
+            )
         except Exception as e:
             logger.error(f"Failed to capture network response: {e}")
 
@@ -129,12 +146,13 @@ async def _setup_network_interception_and_scripts(context: AsyncBrowserContext):
 async def _setup_model_list_interception(context: AsyncBrowserContext):
     """设置模型列表网络拦截"""
     try:
+
         async def handle_model_list_route(route):
             """处理模型列表请求的路由"""
             request = route.request
 
             # 检查是否是模型列表请求
-            if 'alkalimakersuite' in request.url and 'ListModels' in request.url:
+            if "alkalimakersuite" in request.url and "ListModels" in request.url:
                 logger.info(f"🔍 拦截到模型列表请求: {request.url}")
 
                 # 继续原始请求
@@ -144,13 +162,12 @@ async def _setup_model_list_interception(context: AsyncBrowserContext):
                 original_body = await response.body()
 
                 # 修改响应
-                modified_body = await _modify_model_list_response(original_body, request.url)
+                modified_body = await _modify_model_list_response(
+                    original_body, request.url
+                )
 
                 # 返回修改后的响应
-                await route.fulfill(
-                    response=response,
-                    body=modified_body
-                )
+                await route.fulfill(response=response, body=modified_body)
             else:
                 # 对于其他请求，直接继续
                 await route.continue_()
@@ -167,31 +184,32 @@ async def _modify_model_list_response(original_body: bytes, url: str) -> bytes:
     """修改模型列表响应"""
     try:
         # 解码响应体
-        original_text = original_body.decode('utf-8')
+        original_text = original_body.decode("utf-8")
 
         # 处理反劫持前缀
         ANTI_HIJACK_PREFIX = ")]}'\n"
         has_prefix = False
         if original_text.startswith(ANTI_HIJACK_PREFIX):
-            original_text = original_text[len(ANTI_HIJACK_PREFIX):]
+            original_text = original_text[len(ANTI_HIJACK_PREFIX) :]
             has_prefix = True
 
         # 解析JSON
         import json
+
         json_data = json.loads(original_text)
 
         # 注入模型
         modified_data = await _inject_models_to_response(json_data, url)
 
         # 序列化回JSON
-        modified_text = json.dumps(modified_data, separators=(',', ':'))
+        modified_text = json.dumps(modified_data, separators=(",", ":"))
 
         # 重新添加前缀
         if has_prefix:
             modified_text = ANTI_HIJACK_PREFIX + modified_text
 
         logger.info("✅ 成功修改模型列表响应")
-        return modified_text.encode('utf-8')
+        return modified_text.encode("utf-8")
 
     except Exception as e:
         logger.error(f"修改模型列表响应时发生错误: {e}")
@@ -223,15 +241,19 @@ async def _inject_models_to_response(json_data: dict, url: str) -> dict:
 
         # 注入模型
         for model in reversed(injected_models):  # 反向以保持顺序
-            model_name = model['raw_model_path']
+            model_name = model["raw_model_path"]
 
             # 检查模型是否已存在
-            if not any(m[0] == model_name for m in models_array if isinstance(m, list) and len(m) > 0):
+            if not any(
+                m[0] == model_name
+                for m in models_array
+                if isinstance(m, list) and len(m) > 0
+            ):
                 # 创建新模型条目
                 new_model = json.loads(json.dumps(template_model))  # 深拷贝
                 new_model[0] = model_name  # name
-                new_model[3] = model['display_name']  # display name
-                new_model[4] = model['description']  # description
+                new_model[3] = model["display_name"]  # display name
+                new_model[4] = model["description"]  # description
 
                 # 添加特殊标记，表示这是通过网络拦截注入的模型
                 # 在模型数组的末尾添加一个特殊字段作为标记
@@ -261,9 +283,13 @@ def _find_model_list_array(obj):
 
     # 检查是否是模型数组
     if isinstance(obj, list) and len(obj) > 0:
-        if all(isinstance(item, list) and len(item) > 0 and
-               isinstance(item[0], str) and item[0].startswith('models/')
-               for item in obj):
+        if all(
+            isinstance(item, list)
+            and len(item) > 0
+            and isinstance(item[0], str)
+            and item[0].startswith("models/")
+            for item in obj
+        ):
             return obj
 
     # 递归搜索
@@ -290,7 +316,7 @@ def _find_template_model(models_array):
     for model in models_array:
         if isinstance(model, list) and len(model) > 7:
             model_name = model[0] if len(model) > 0 else ""
-            if 'flash' in model_name.lower() or 'pro' in model_name.lower():
+            if "flash" in model_name.lower() or "pro" in model_name.lower():
                 return model
 
     # 如果没找到，返回第一个有效模型
@@ -312,7 +338,7 @@ async def _add_init_scripts_to_context(context: AsyncBrowserContext):
             return
 
         # 读取脚本内容
-        with open(USERSCRIPT_PATH, 'r', encoding='utf-8') as f:
+        with open(USERSCRIPT_PATH, "r", encoding="utf-8") as f:
             script_content = f.read()
 
         # 清理UserScript头部
@@ -328,15 +354,15 @@ async def _add_init_scripts_to_context(context: AsyncBrowserContext):
 
 def _clean_userscript_headers(script_content: str) -> str:
     """清理UserScript头部信息"""
-    lines = script_content.split('\n')
+    lines = script_content.split("\n")
     cleaned_lines = []
     in_userscript_block = False
 
     for line in lines:
-        if line.strip().startswith('// ==UserScript=='):
+        if line.strip().startswith("// ==UserScript=="):
             in_userscript_block = True
             continue
-        elif line.strip().startswith('// ==/UserScript=='):
+        elif line.strip().startswith("// ==/UserScript=="):
             in_userscript_block = False
             continue
         elif in_userscript_block:
@@ -344,7 +370,7 @@ def _clean_userscript_headers(script_content: str) -> str:
         else:
             cleaned_lines.append(line)
 
-    return '\n'.join(cleaned_lines)
+    return "\n".join(cleaned_lines)
 
 
 async def _initialize_page_logic(browser: AsyncBrowser):
@@ -352,12 +378,12 @@ async def _initialize_page_logic(browser: AsyncBrowser):
     logger.info("--- 初始化页面逻辑 (连接到现有浏览器) ---")
     temp_context: Optional[AsyncBrowserContext] = None
     storage_state_path_to_use: Optional[str] = None
-    launch_mode = os.environ.get('LAUNCH_MODE', 'debug')
+    launch_mode = os.environ.get("LAUNCH_MODE", "debug")
     logger.info(f"   检测到启动模式: {launch_mode}")
     loop = asyncio.get_running_loop()
 
-    if launch_mode == 'headless' or launch_mode == 'virtual_headless':
-        auth_filename = os.environ.get('ACTIVE_AUTH_JSON_PATH')
+    if launch_mode == "headless" or launch_mode == "virtual_headless":
+        auth_filename = os.environ.get("ACTIVE_AUTH_JSON_PATH")
         if auth_filename:
             constructed_path = auth_filename
             if os.path.exists(constructed_path):
@@ -369,14 +395,16 @@ async def _initialize_page_logic(browser: AsyncBrowser):
         else:
             logger.error(f"{launch_mode} 模式需要 ACTIVE_AUTH_JSON_PATH 环境变量，但未设置或为空。")
             raise RuntimeError(f"{launch_mode} 模式需要 ACTIVE_AUTH_JSON_PATH。")
-    elif launch_mode == 'debug':
+    elif launch_mode == "debug":
         logger.info(f"   调试模式: 尝试从环境变量 ACTIVE_AUTH_JSON_PATH 加载认证文件...")
-        auth_filepath_from_env = os.environ.get('ACTIVE_AUTH_JSON_PATH')
+        auth_filepath_from_env = os.environ.get("ACTIVE_AUTH_JSON_PATH")
         if auth_filepath_from_env and os.path.exists(auth_filepath_from_env):
             storage_state_path_to_use = auth_filepath_from_env
             logger.info(f"   调试模式将使用的认证文件 (来自环境变量): {storage_state_path_to_use}")
         elif auth_filepath_from_env:
-            logger.warning(f"   调试模式下环境变量 ACTIVE_AUTH_JSON_PATH 指向的文件不存在: '{auth_filepath_from_env}'。不加载认证文件。")
+            logger.warning(
+                f"   调试模式下环境变量 ACTIVE_AUTH_JSON_PATH 指向的文件不存在: '{auth_filepath_from_env}'。不加载认证文件。"
+            )
         else:
             logger.info("   调试模式下未通过环境变量提供认证文件。将使用浏览器当前状态。")
     elif launch_mode == "direct_debug_no_browser":
@@ -386,22 +414,27 @@ async def _initialize_page_logic(browser: AsyncBrowser):
 
     try:
         logger.info("创建新的浏览器上下文...")
-        context_options: Dict[str, Any] = {'viewport': {'width': 460, 'height': 800}}
+        context_options: Dict[str, Any] = {"viewport": {"width": 460, "height": 800}}
         if storage_state_path_to_use:
-            context_options['storage_state'] = storage_state_path_to_use
-            logger.info(f"   (使用 storage_state='{os.path.basename(storage_state_path_to_use)}')")
+            context_options["storage_state"] = storage_state_path_to_use
+            logger.info(
+                f"   (使用 storage_state='{os.path.basename(storage_state_path_to_use)}')"
+            )
         else:
             logger.info("   (不使用 storage_state)")
 
         # 代理设置需要从server模块中获取
         import server
+
         if server.PLAYWRIGHT_PROXY_SETTINGS:
-            context_options['proxy'] = server.PLAYWRIGHT_PROXY_SETTINGS
-            logger.info(f"   (浏览器上下文将使用代理: {server.PLAYWRIGHT_PROXY_SETTINGS['server']})")
+            context_options["proxy"] = server.PLAYWRIGHT_PROXY_SETTINGS
+            logger.info(
+                f"   (浏览器上下文将使用代理: {server.PLAYWRIGHT_PROXY_SETTINGS['server']})"
+            )
         else:
             logger.info("   (浏览器上下文不使用显式代理配置)")
 
-        context_options['ignore_https_errors'] = True
+        context_options["ignore_https_errors"] = True
         logger.info("   (浏览器上下文将忽略 HTTPS 错误)")
 
         temp_context = await browser.new_context(**context_options)
@@ -413,7 +446,7 @@ async def _initialize_page_logic(browser: AsyncBrowser):
         pages = temp_context.pages
         target_url_base = f"https://{AI_STUDIO_URL_PATTERN}"
         target_full_url = f"{target_url_base}prompts/new_chat"
-        login_url_pattern = 'accounts.google.com'
+        login_url_pattern = "accounts.google.com"
         current_url = ""
 
         # 导入_handle_model_list_response - 需要延迟导入避免循环引用
@@ -422,7 +455,11 @@ async def _initialize_page_logic(browser: AsyncBrowser):
         for p_iter in pages:
             try:
                 page_url_to_check = p_iter.url
-                if not p_iter.is_closed() and target_url_base in page_url_to_check and "/prompts/" in page_url_to_check:
+                if (
+                    not p_iter.is_closed()
+                    and target_url_base in page_url_to_check
+                    and "/prompts/" in page_url_to_check
+                ):
                     found_page = p_iter
                     current_url = page_url_to_check
                     logger.info(f"   找到已打开的 AI Studio 页面: {current_url}")
@@ -437,7 +474,9 @@ async def _initialize_page_logic(browser: AsyncBrowser):
             except AttributeError as attr_err_url:
                 logger.warning(f"   检查页面 URL 时出现属性错误: {attr_err_url}")
             except Exception as e_url_check:
-                logger.warning(f"   检查页面 URL 时出现其他未预期错误: {e_url_check} (类型: {type(e_url_check).__name__})")
+                logger.warning(
+                    f"   检查页面 URL 时出现其他未预期错误: {e_url_check} (类型: {type(e_url_check).__name__})"
+                )
 
         if not found_page:
             logger.info(f"-> 未找到合适的现有页面，正在打开新页面并导航到 {target_full_url}...")
@@ -448,36 +487,49 @@ async def _initialize_page_logic(browser: AsyncBrowser):
                 # Setup debug listeners for error snapshots
                 _setup_debug_listeners(found_page)
             try:
-                await found_page.goto(target_full_url, wait_until="domcontentloaded", timeout=90000)
+                await found_page.goto(
+                    target_full_url, wait_until="domcontentloaded", timeout=90000
+                )
                 current_url = found_page.url
                 logger.info(f"-> 新页面导航尝试完成。当前 URL: {current_url}")
             except Exception as new_page_nav_err:
                 # 导入save_error_snapshot函数
                 from .operations import save_error_snapshot
+
                 await save_error_snapshot("init_new_page_nav_fail")
                 error_str = str(new_page_nav_err)
                 if "NS_ERROR_NET_INTERRUPT" in error_str:
-                    logger.error("\n" + "="*30 + " 网络导航错误提示 " + "="*30)
-                    logger.error(f"❌ 导航到 '{target_full_url}' 失败，出现网络中断错误 (NS_ERROR_NET_INTERRUPT)。")
+                    logger.error("\n" + "=" * 30 + " 网络导航错误提示 " + "=" * 30)
+                    logger.error(
+                        f"❌ 导航到 '{target_full_url}' 失败，出现网络中断错误 (NS_ERROR_NET_INTERRUPT)。"
+                    )
                     logger.error("   这通常表示浏览器在尝试加载页面时连接被意外断开。")
                     logger.error("   可能的原因及排查建议:")
                     logger.error("     1. 网络连接: 请检查你的本地网络连接是否稳定，并尝试在普通浏览器中访问目标网址。")
-                    logger.error("     2. AI Studio 服务: 确认 aistudio.google.com 服务本身是否可用。")
+                    logger.error(
+                        "     2. AI Studio 服务: 确认 aistudio.google.com 服务本身是否可用。"
+                    )
                     logger.error("     3. 防火墙/代理/VPN: 检查本地防火墙、杀毒软件、代理或 VPN 设置。")
                     logger.error("     4. Camoufox 服务: 确认 launch_camoufox.py 脚本是否正常运行。")
                     logger.error("     5. 系统资源问题: 确保系统有足够的内存和 CPU 资源。")
-                    logger.error("="*74 + "\n")
+                    logger.error("=" * 74 + "\n")
                 raise RuntimeError(f"导航新页面失败: {new_page_nav_err}") from new_page_nav_err
 
         if login_url_pattern in current_url:
-            if launch_mode == 'headless':
+            if launch_mode == "headless":
                 logger.error("无头模式下检测到重定向至登录页面，认证可能已失效。请更新认证文件。")
                 raise RuntimeError("无头模式认证失败，需要更新认证文件。")
             else:
                 print(f"\n{'='*20} 需要操作 {'='*20}", flush=True)
-                login_prompt = "   检测到可能需要登录。如果浏览器显示登录页面，请在浏览器窗口中完成 Google 登录，然后在此处按 Enter 键继续..."
+                login_prompt = (
+                    "   检测到可能需要登录。如果浏览器显示登录页面，请在浏览器窗口中完成 Google 登录，然后在此处按 Enter 键继续..."
+                )
                 # NEW: If SUPPRESS_LOGIN_WAIT is set, skip waiting for user input.
-                if os.environ.get("SUPPRESS_LOGIN_WAIT", "").lower() in ("1", "true", "yes"):
+                if os.environ.get("SUPPRESS_LOGIN_WAIT", "").lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                ):
                     logger.info("检测到 SUPPRESS_LOGIN_WAIT 标志，跳过等待用户输入。")
                 else:
                     print(USER_INPUT_START_MARKER_SERVER, flush=True)
@@ -485,7 +537,9 @@ async def _initialize_page_logic(browser: AsyncBrowser):
                     print(USER_INPUT_END_MARKER_SERVER, flush=True)
                 logger.info("   正在检查登录状态...")
                 try:
-                    await found_page.wait_for_url(f"**/{AI_STUDIO_URL_PATTERN}**", timeout=180000)
+                    await found_page.wait_for_url(
+                        f"**/{AI_STUDIO_URL_PATTERN}**", timeout=180000
+                    )
                     current_url = found_page.url
                     if login_url_pattern in current_url:
                         logger.error("手动登录尝试后，页面似乎仍停留在登录页面。")
@@ -493,33 +547,48 @@ async def _initialize_page_logic(browser: AsyncBrowser):
                     logger.info("   ✅ 登录成功！请不要操作浏览器窗口，等待后续提示。")
 
                     # 登录成功后，调用认证保存逻辑
-                    if os.environ.get('AUTO_SAVE_AUTH', 'false').lower() == 'true':
-                        await _wait_for_model_list_and_handle_auth_save(temp_context, launch_mode, loop)
+                    if os.environ.get("AUTO_SAVE_AUTH", "false").lower() == "true":
+                        await _wait_for_model_list_and_handle_auth_save(
+                            temp_context, launch_mode, loop
+                        )
 
                 except Exception as wait_login_err:
                     from .operations import save_error_snapshot
+
                     await save_error_snapshot("init_login_wait_fail")
-                    logger.error(f"登录提示后未能检测到 AI Studio URL 或保存状态时出错: {wait_login_err}", exc_info=True)
-                    raise RuntimeError(f"登录提示后未能检测到 AI Studio URL: {wait_login_err}") from wait_login_err
+                    logger.error(
+                        f"登录提示后未能检测到 AI Studio URL 或保存状态时出错: {wait_login_err}",
+                        exc_info=True,
+                    )
+                    raise RuntimeError(
+                        f"登录提示后未能检测到 AI Studio URL: {wait_login_err}"
+                    ) from wait_login_err
 
         elif target_url_base not in current_url or "/prompts/" not in current_url:
             from .operations import save_error_snapshot
+
             await save_error_snapshot("init_unexpected_page")
-            logger.error(f"初始导航后页面 URL 意外: {current_url}。期望包含 '{target_url_base}' 和 '/prompts/'。")
+            logger.error(
+                f"初始导航后页面 URL 意外: {current_url}。期望包含 '{target_url_base}' 和 '/prompts/'。"
+            )
             raise RuntimeError(f"初始导航后出现意外页面: {current_url}。")
 
         logger.info(f"-> 确认当前位于 AI Studio 对话页面: {current_url}")
         await found_page.bring_to_front()
 
         try:
-            input_wrapper_locator = found_page.locator('ms-prompt-input-wrapper')
+            input_wrapper_locator = found_page.locator("ms-prompt-input-wrapper")
             await expect_async(input_wrapper_locator).to_be_visible(timeout=35000)
-            await expect_async(found_page.locator(INPUT_SELECTOR)).to_be_visible(timeout=10000)
+            await expect_async(found_page.locator(INPUT_SELECTOR)).to_be_visible(
+                timeout=10000
+            )
             logger.info("-> ✅ 核心输入区域可见。")
-            
+
             model_name_locator = found_page.locator('[data-test-id="model-name"]')
             try:
-                model_name_on_page = await model_name_locator.first.inner_text(timeout=5000)
+                model_name_on_page = await model_name_locator.first.inner_text(
+                    timeout=5000
+                )
                 logger.info(f"-> 🤖 页面检测到的当前模型: {model_name_on_page}")
             except PlaywrightAsyncError as e:
                 logger.error(f"获取模型名称时出错 (model_name_locator): {e}")
@@ -534,9 +603,14 @@ async def _initialize_page_logic(browser: AsyncBrowser):
             return result_page_instance, result_page_ready
         except Exception as input_visible_err:
             from .operations import save_error_snapshot
+
             await save_error_snapshot("init_fail_input_timeout")
-            logger.error(f"页面初始化失败：核心输入区域未在预期时间内变为可见。最后的 URL 是 {found_page.url}", exc_info=True)
-            raise RuntimeError(f"页面初始化失败：核心输入区域未在预期时间内变为可见。最后的 URL 是 {found_page.url}") from input_visible_err
+            logger.error(
+                f"页面初始化失败：核心输入区域未在预期时间内变为可见。最后的 URL 是 {found_page.url}", exc_info=True
+            )
+            raise RuntimeError(
+                f"页面初始化失败：核心输入区域未在预期时间内变为可见。最后的 URL 是 {found_page.url}"
+            ) from input_visible_err
     except Exception as e_init_page:
         logger.critical(f"❌ 页面逻辑初始化期间发生严重意外错误: {e_init_page}", exc_info=True)
         if temp_context:
@@ -545,8 +619,9 @@ async def _initialize_page_logic(browser: AsyncBrowser):
                 await temp_context.close()
                 logger.info("   ✅ 临时浏览器上下文已关闭。")
             except Exception as close_err:
-                 logger.warning(f"   ⚠️ 关闭临时浏览器上下文时出错: {close_err}")
+                logger.warning(f"   ⚠️ 关闭临时浏览器上下文时出错: {close_err}")
         from .operations import save_error_snapshot
+
         await save_error_snapshot("init_unexpected_error")
         raise RuntimeError(f"页面初始化意外错误: {e_init_page}") from e_init_page
 
@@ -555,6 +630,7 @@ async def _close_page_logic():
     """关闭页面逻辑"""
     # 需要访问全局变量
     import server
+
     logger.info("--- 运行页面逻辑关闭 --- ")
     if server.page_instance and not server.page_instance.is_closed():
         try:
@@ -565,7 +641,10 @@ async def _close_page_logic():
         except asyncio.TimeoutError as timeout_err:
             logger.warning(f"   ⚠️ 关闭页面时超时: {timeout_err}")
         except Exception as other_err:
-            logger.error(f"   ⚠️ 关闭页面时出现意外错误: {other_err} (类型: {type(other_err).__name__})", exc_info=True)
+            logger.error(
+                f"   ⚠️ 关闭页面时出现意外错误: {other_err} (类型: {type(other_err).__name__})",
+                exc_info=True,
+            )
     server.page_instance = None
     server.is_page_ready = False
     logger.info("页面逻辑状态已重置。")
@@ -575,13 +654,14 @@ async def _close_page_logic():
 async def signal_camoufox_shutdown():
     """发送关闭信号到Camoufox服务器"""
     logger.info("   尝试发送关闭信号到 Camoufox 服务器 (此功能可能已由父进程处理)...")
-    ws_endpoint = os.environ.get('CAMOUFOX_WS_ENDPOINT')
+    ws_endpoint = os.environ.get("CAMOUFOX_WS_ENDPOINT")
     if not ws_endpoint:
         logger.warning("   ⚠️ 无法发送关闭信号：未找到 CAMOUFOX_WS_ENDPOINT 环境变量。")
         return
 
     # 需要访问全局浏览器实例
     import server
+
     if not server.browser_instance or not server.browser_instance.is_connected():
         logger.warning("   ⚠️ 浏览器实例已断开或未初始化，跳过关闭信号发送。")
         return
@@ -606,9 +686,11 @@ async def _wait_for_model_list_and_handle_auth_save(temp_context, launch_mode, l
         logger.warning("   ⚠️ 等待模型列表响应超时，但继续处理认证保存...")
 
     # 检查是否有预设的文件名用于保存
-    save_auth_filename = os.environ.get('SAVE_AUTH_FILENAME', '').strip()
+    save_auth_filename = os.environ.get("SAVE_AUTH_FILENAME", "").strip()
     if save_auth_filename:
-        logger.info(f"   检测到 SAVE_AUTH_FILENAME 环境变量: '{save_auth_filename}'。将自动保存认证文件。")
+        logger.info(
+            f"   检测到 SAVE_AUTH_FILENAME 环境变量: '{save_auth_filename}'。将自动保存认证文件。"
+        )
         await _handle_auth_file_save_with_filename(temp_context, save_auth_filename)
         return
 
@@ -620,42 +702,44 @@ async def _interactive_auth_save(temp_context, launch_mode, loop):
     """处理认证文件保存的交互式提示"""
     # 检查是否启用自动确认
     if AUTO_CONFIRM_LOGIN:
-        print("\n" + "="*50, flush=True)
+        print("\n" + "=" * 50, flush=True)
         print("   ✅ 登录成功！检测到模型列表响应。", flush=True)
         print("   🤖 自动确认模式已启用，将自动保存认证状态...", flush=True)
 
         # 自动保存认证状态
         await _handle_auth_file_save_auto(temp_context)
-        print("="*50 + "\n", flush=True)
+        print("=" * 50 + "\n", flush=True)
         return
 
     # 手动确认模式
-    print("\n" + "="*50, flush=True)
+    print("\n" + "=" * 50, flush=True)
     print("   【用户交互】需要您的输入!", flush=True)
     print("   ✅ 登录成功！检测到模型列表响应。", flush=True)
 
-    should_save_auth_choice = ''
-    if AUTO_SAVE_AUTH and launch_mode == 'debug':
+    should_save_auth_choice = ""
+    if AUTO_SAVE_AUTH and launch_mode == "debug":
         logger.info("   自动保存认证模式已启用，将自动保存认证状态...")
-        should_save_auth_choice = 'y'
+        should_save_auth_choice = "y"
     else:
         save_auth_prompt = "   是否要将当前的浏览器认证状态保存到文件？ (y/N): "
         print(USER_INPUT_START_MARKER_SERVER, flush=True)
         try:
             auth_save_input_future = loop.run_in_executor(None, input, save_auth_prompt)
-            should_save_auth_choice = await asyncio.wait_for(auth_save_input_future, timeout=AUTH_SAVE_TIMEOUT)
+            should_save_auth_choice = await asyncio.wait_for(
+                auth_save_input_future, timeout=AUTH_SAVE_TIMEOUT
+            )
         except asyncio.TimeoutError:
             print(f"   输入等待超时({AUTH_SAVE_TIMEOUT}秒)。默认不保存认证状态。", flush=True)
-            should_save_auth_choice = 'n'
+            should_save_auth_choice = "n"
         finally:
             print(USER_INPUT_END_MARKER_SERVER, flush=True)
 
-    if should_save_auth_choice.strip().lower() == 'y':
+    if should_save_auth_choice.strip().lower() == "y":
         await _handle_auth_file_save(temp_context, loop)
     else:
         print("   好的，不保存认证状态。", flush=True)
 
-    print("="*50 + "\n", flush=True)
+    print("=" * 50 + "\n", flush=True)
 
 
 async def _handle_auth_file_save(temp_context, loop):
@@ -664,19 +748,26 @@ async def _handle_auth_file_save(temp_context, loop):
     default_auth_filename = f"auth_state_{int(time.time())}.json"
 
     print(USER_INPUT_START_MARKER_SERVER, flush=True)
-    filename_prompt_str = f"   请输入保存的文件名 (默认为: {default_auth_filename}，输入 'cancel' 取消保存): "
-    chosen_auth_filename = ''
+    filename_prompt_str = (
+        f"   请输入保存的文件名 (默认为: {default_auth_filename}，输入 'cancel' 取消保存): "
+    )
+    chosen_auth_filename = ""
 
     try:
         filename_input_future = loop.run_in_executor(None, input, filename_prompt_str)
-        chosen_auth_filename = await asyncio.wait_for(filename_input_future, timeout=AUTH_SAVE_TIMEOUT)
+        chosen_auth_filename = await asyncio.wait_for(
+            filename_input_future, timeout=AUTH_SAVE_TIMEOUT
+        )
     except asyncio.TimeoutError:
-        print(f"   输入文件名等待超时({AUTH_SAVE_TIMEOUT}秒)。将使用默认文件名: {default_auth_filename}", flush=True)
+        print(
+            f"   输入文件名等待超时({AUTH_SAVE_TIMEOUT}秒)。将使用默认文件名: {default_auth_filename}",
+            flush=True,
+        )
         chosen_auth_filename = default_auth_filename
     finally:
         print(USER_INPUT_END_MARKER_SERVER, flush=True)
 
-    if chosen_auth_filename.strip().lower() == 'cancel':
+    if chosen_auth_filename.strip().lower() == "cancel":
         print("   用户选择取消保存认证状态。", flush=True)
         return
 
@@ -732,6 +823,7 @@ async def _handle_auth_file_save_auto(temp_context):
         logger.error(f"   ❌ 自动保存认证状态失败: {save_state_err}", exc_info=True)
         print(f"   ❌ 自动保存认证状态失败: {save_state_err}", flush=True)
 
+
 async def enable_temporary_chat_mode(page: AsyncPage):
     """
     检查并启用 AI Studio 界面的“临时聊天”模式。
@@ -739,22 +831,24 @@ async def enable_temporary_chat_mode(page: AsyncPage):
     """
     try:
         logger.info("-> (UI Op) 正在检查并启用 '临时聊天' 模式...")
-        
-        incognito_button_locator = page.locator('button[aria-label="Temporary chat toggle"]')
-        
+
+        incognito_button_locator = page.locator(
+            'button[aria-label="Temporary chat toggle"]'
+        )
+
         await incognito_button_locator.wait_for(state="visible", timeout=10000)
-        
+
         button_classes = await incognito_button_locator.get_attribute("class")
-        
-        if button_classes and 'ms-button-active' in button_classes:
+
+        if button_classes and "ms-button-active" in button_classes:
             logger.info("-> (UI Op) '临时聊天' 模式已激活。")
         else:
             logger.info("-> (UI Op) '临时聊天' 模式未激活，正在点击...")
             await incognito_button_locator.click(timeout=5000, force=True)
             await asyncio.sleep(1)
-            
+
             updated_classes = await incognito_button_locator.get_attribute("class")
-            if updated_classes and 'ms-button-active' in updated_classes:
+            if updated_classes and "ms-button-active" in updated_classes:
                 logger.info("✅ (UI Op) '临时聊天' 模式已成功启用。")
             else:
                 logger.warning("⚠️ (UI Op) 点击后 '临时聊天' 模式状态验证失败。")

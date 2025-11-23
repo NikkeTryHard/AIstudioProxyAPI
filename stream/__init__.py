@@ -3,6 +3,7 @@ import multiprocessing
 
 from stream import main
 
+
 def start(*args, **kwargs):
     """
     启动流式代理服务器，兼容位置参数和关键字参数
@@ -20,8 +21,8 @@ def start(*args, **kwargs):
         proxy = args[2] if len(args) > 2 else None
     else:
         # 关键字参数模式
-        queue = kwargs.get('queue', None)
-        port = kwargs.get('port', None)
-        proxy = kwargs.get('proxy', None)
+        queue = kwargs.get("queue", None)
+        port = kwargs.get("port", None)
+        proxy = kwargs.get("proxy", None)
 
     asyncio.run(main.builtin(queue=queue, port=port, proxy=proxy))

@@ -5,9 +5,10 @@
 本模块负责将各种格式的 reasoning_effort 参数转换为统一的内部指令结构。
 """
 
-from typing import Optional, Any, Dict
 from dataclasses import dataclass
-from config import ENABLE_THINKING_BUDGET, DEFAULT_THINKING_BUDGET
+from typing import Any, Dict, Optional
+
+from config import DEFAULT_THINKING_BUDGET, ENABLE_THINKING_BUDGET
 
 
 @dataclass
@@ -20,6 +21,7 @@ class ThinkingDirective:
         budget_value: 预算token数量（仅当budget_enabled=True时有效）
         original_value: 原始的reasoning_effort值（用于日志）
     """
+
     thinking_enabled: bool
     budget_enabled: bool
     budget_value: Optional[int]
@@ -60,16 +62,18 @@ def normalize_reasoning_effort(reasoning_effort: Optional[Any]) -> ThinkingDirec
             thinking_enabled=ENABLE_THINKING_BUDGET,
             budget_enabled=ENABLE_THINKING_BUDGET,
             budget_value=DEFAULT_THINKING_BUDGET if ENABLE_THINKING_BUDGET else None,
-            original_value=None
+            original_value=None,
         )
 
     # 场景2: 关闭思考模式 (reasoning_effort = 0 或 "0")
-    if reasoning_effort == 0 or (isinstance(reasoning_effort, str) and reasoning_effort.strip() == "0"):
+    if reasoning_effort == 0 or (
+        isinstance(reasoning_effort, str) and reasoning_effort.strip() == "0"
+    ):
         return ThinkingDirective(
             thinking_enabled=False,
             budget_enabled=False,
             budget_value=None,
-            original_value=reasoning_effort
+            original_value=reasoning_effort,
         )
 
     # 场景3: 开启思考但不限制预算 (reasoning_effort = "none" / "-1" / -1)
@@ -80,14 +84,14 @@ def normalize_reasoning_effort(reasoning_effort: Optional[Any]) -> ThinkingDirec
                 thinking_enabled=True,
                 budget_enabled=False,
                 budget_value=None,
-                original_value=reasoning_effort
+                original_value=reasoning_effort,
             )
     elif reasoning_effort == -1:
         return ThinkingDirective(
             thinking_enabled=True,
             budget_enabled=False,
             budget_value=None,
-            original_value=reasoning_effort
+            original_value=reasoning_effort,
         )
 
     # 场景4: 开启思考且限制预算 (具体数字或预设值)
@@ -98,7 +102,7 @@ def normalize_reasoning_effort(reasoning_effort: Optional[Any]) -> ThinkingDirec
             thinking_enabled=True,
             budget_enabled=True,
             budget_value=budget_value,
-            original_value=reasoning_effort
+            original_value=reasoning_effort,
         )
 
     # 无效值：使用默认配置
@@ -106,7 +110,7 @@ def normalize_reasoning_effort(reasoning_effort: Optional[Any]) -> ThinkingDirec
         thinking_enabled=ENABLE_THINKING_BUDGET,
         budget_enabled=ENABLE_THINKING_BUDGET,
         budget_value=DEFAULT_THINKING_BUDGET if ENABLE_THINKING_BUDGET else None,
-        original_value=reasoning_effort
+        original_value=reasoning_effort,
     )
 
 

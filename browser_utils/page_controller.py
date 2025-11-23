@@ -5,13 +5,14 @@ PageController模块
 from playwright.async_api import Page as AsyncPage
 
 from browser_utils.page_controller_modules import (
-    ParameterController,
-    ThinkingController,
-    InputController,
+    BaseController,
     ChatController,
+    InputController,
+    ParameterController,
     ResponseController,
-    BaseController
+    ThinkingController,
 )
+
 
 class PageController(
     ParameterController,
@@ -19,7 +20,7 @@ class PageController(
     InputController,
     ChatController,
     ResponseController,
-    BaseController
+    BaseController,
 ):
     """封装了与AI Studio页面交互的所有操作。"""
 

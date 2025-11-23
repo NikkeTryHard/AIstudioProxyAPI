@@ -7,15 +7,7 @@ import asyncio
 import json
 import os
 from asyncio import Event, Future
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Tuple,
-    cast,
-)
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -408,7 +400,12 @@ async def _handle_auxiliary_stream_response(
 
         if not result_future.done():
             result_future.set_result(JSONResponse(content=response_payload))
-        return None, submit_button_locator, check_client_disconnected, (finish_reason_val == "tool_calls")
+        return (
+            None,
+            submit_button_locator,
+            check_client_disconnected,
+            (finish_reason_val == "tool_calls"),
+        )
 
 
 def _try_parse_tool_calls(content: str) -> Optional[List[Dict[str, Any]]]:
@@ -571,7 +568,12 @@ async def _handle_playwright_response(
         if not result_future.done():
             result_future.set_result(JSONResponse(content=response_payload))
 
-        return None, submit_button_locator, check_client_disconnected, (finish_reason_val == "tool_calls")
+        return (
+            None,
+            submit_button_locator,
+            check_client_disconnected,
+            (finish_reason_val == "tool_calls"),
+        )
 
 
 async def _cleanup_request_resources(
@@ -810,14 +812,18 @@ async def _process_request_refactored(
             result_future.set_exception(http_err)
     except PlaywrightAsyncError as pw_err:
         context["logger"].error(f"[{req_id}] 捕获到 Playwright 错误: {pw_err}")
-        await save_error_snapshot(f"process_playwright_error_{req_id}")
+        await save_error_snapshot(
+            f"process_playwright_error_{req_id}", error_exception=pw_err
+        )
         if not result_future.done():
             result_future.set_exception(
                 upstream_error(req_id, f"Playwright interaction failed: {pw_err}")
             )
     except Exception as e:
         context["logger"].exception(f"[{req_id}] 捕获到意外错误")
-        await save_error_snapshot(f"process_unexpected_error_{req_id}")
+        await save_error_snapshot(
+            f"process_unexpected_error_{req_id}", error_exception=e
+        )
         if not result_future.done():
             result_future.set_exception(
                 server_error(req_id, f"Unexpected server error: {e}")

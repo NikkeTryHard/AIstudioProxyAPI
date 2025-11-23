@@ -11,18 +11,70 @@ Created: 2025-11-21
 Purpose: Fix headless mode debugging and client disconnect issues
 """
 
-import asyncio
 import json
 import logging
 import os
+import platform
+import sys
 import traceback
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-from playwright.async_api import Page as AsyncPage, Locator
+from playwright.async_api import Locator
+from playwright.async_api import Page as AsyncPage
+
+from logging_utils.context_logger import safe_serialize
 
 logger = logging.getLogger("AIStudioProxyServer")
+
+
+def get_exception_details(exc: Optional[Exception]) -> Dict[str, Any]:
+    """
+    Extract detailed exception info including stack frames and locals.
+    """
+    if not exc:
+        return {}
+
+    details = {
+        "type": type(exc).__name__,
+        "message": str(exc),
+        "traceback": traceback.format_exc(),
+        "frames": [],
+    }
+
+    try:
+        # Walk the traceback
+        tb = exc.__traceback__
+        while tb:
+            frame = tb.tb_frame
+
+            # Filter out frames from libraries if needed, but useful for debug
+
+            frame_info = {
+                "filename": frame.f_code.co_filename,
+                "function": frame.f_code.co_name,
+                "lineno": tb.tb_lineno,
+                "locals": {},
+            }
+
+            # Capture locals safely
+            for k, v in frame.f_locals.items():
+                # Skip internal variables or obviously large/irrelevant ones
+                if k.startswith("__") or k in ["self", "cls"]:
+                    continue
+                try:
+                    frame_info["locals"][k] = safe_serialize(v, max_depth=1)
+                except Exception:
+                    frame_info["locals"][k] = "<serialization_error>"
+
+            details["frames"].append(frame_info)
+            tb = tb.tb_next
+
+    except Exception as e:
+        details["extraction_error"] = str(e)
+
+    return details
 
 
 def get_texas_timestamp() -> Tuple[str, str]:
@@ -69,7 +121,8 @@ async def capture_dom_structure(page: AsyncPage) -> str:
         str: Human-readable DOM tree structure
     """
     try:
-        dom_tree = await page.evaluate("""() => {
+        dom_tree = await page.evaluate(
+            """() => {
             function getTreeStructure(element, indent = '', depth = 0, maxDepth = 15) {
                 // Prevent infinite recursion
                 if (depth > maxDepth) {
@@ -100,7 +153,7 @@ async def capture_dom_structure(page: AsyncPage) -> str:
                     }
                 }
 
-                // Add state attributes
+                # Add state attributes
                 if (element.disabled !== undefined) {
                     result += ` [disabled=${element.disabled}]`;
                 }
@@ -126,7 +179,8 @@ async def capture_dom_structure(page: AsyncPage) -> str:
             }
 
             return getTreeStructure(document.body);
-        }()""")
+        }()"""
+        )
 
         return dom_tree
     except Exception as e:
@@ -148,7 +202,7 @@ async def capture_playwright_state(
     Returns:
         Dict containing page state and locator states
     """
-    state = {
+    state: Dict[str, Any] = {
         "page": {
             "url": page.url,
             "title": "",
@@ -292,7 +346,9 @@ async def save_comprehensive_snapshot(
         # === 1. Screenshot ===
         screenshot_path = snapshot_dir / "screenshot.png"
         try:
-            await page.screenshot(path=str(screenshot_path), full_page=True, timeout=15000)
+            await page.screenshot(
+                path=str(screenshot_path), full_page=True, timeout=15000
+            )
             logger.info(f"{log_prefix}   ✅ Screenshot saved")
         except Exception as ss_err:
             logger.error(f"{log_prefix}   ❌ Screenshot failed: {ss_err}")
@@ -325,24 +381,24 @@ async def save_comprehensive_snapshot(
 
             if console_logs:
                 with open(console_logs_path, "w", encoding="utf-8") as f:
-                    f.write("=== Browser Console Logs ===\n\n")
+                    f.write("=== Browser Console Logs ===\\n\\n")
                     for log_entry in console_logs:
                         timestamp = log_entry.get("timestamp", "N/A")
                         log_type = log_entry.get("type", "log")
                         text = log_entry.get("text", "")
                         location = log_entry.get("location", "")
 
-                        f.write(f"[{timestamp}] [{log_type.upper()}] {text}\n")
+                        f.write(f"[{timestamp}] [{log_type.upper()}] {text}\\n")
                         if location:
-                            f.write(f"  Location: {location}\n")
-                        f.write("\n")
+                            f.write(f"  Location: {location}\\n")
+                        f.write("\\n")
 
                 logger.info(
                     f"{log_prefix}   ✅ Console logs saved ({len(console_logs)} entries)"
                 )
             else:
                 with open(console_logs_path, "w", encoding="utf-8") as f:
-                    f.write("No console logs captured.\n")
+                    f.write("No console logs captured.\\n")
                 logger.info(f"{log_prefix}   ℹ️ No console logs available")
         except Exception as console_err:
             logger.error(f"{log_prefix}   ❌ Console logs failed: {console_err}")
@@ -417,6 +473,73 @@ async def save_comprehensive_snapshot(
         except Exception as meta_err:
             logger.error(f"{log_prefix}   ❌ Metadata failed: {meta_err}")
 
+        # === 8. Context JSON (LLM Debug Artifact) ===
+        context_json_path = snapshot_dir / "context.json"
+        try:
+            # Import server to access global logs if needed (though we captured them above)
+            # We use the captured variables from above blocks
+
+            # Helper to get variable from locals if it exists, else None
+            # (In this scope, we can assume variables like dom_tree exist if the block ran)
+
+            full_context = {
+                "summary": {
+                    "timestamp": human_timestamp,
+                    "request_id": req_id,
+                    "error_name": error_name,
+                    "error_stage": error_stage,
+                    "exception_type": type(error_exception).__name__
+                    if error_exception
+                    else "Unknown",
+                    "exception_message": str(error_exception)
+                    if error_exception
+                    else "No exception object provided",
+                },
+                "exception": get_exception_details(error_exception),
+                "browser_context": {
+                    "url": pw_state.get("page", {}).get("url", "unknown"),
+                    "title": pw_state.get("page", {}).get("title", "unknown"),
+                    "viewport": pw_state.get("page", {}).get("viewport", "unknown"),
+                    # Include DOM structure if available
+                    "dom_structure": dom_tree
+                    if "dom_tree" in locals()
+                    else "Not captured",
+                },
+                "logs": {
+                    # Include last 50 console logs
+                    "console": console_logs[-50:]
+                    if "console_logs" in locals() and console_logs
+                    else [],
+                    # Include failed network requests
+                    "failed_network_requests": [
+                        r
+                        for r in network_log.get("requests", [])
+                        if r.get("failure")
+                        or (isinstance(r.get("status"), int) and r.get("status") >= 400)
+                    ]
+                    if "network_log" in locals()
+                    else [],
+                },
+                "system_info": {
+                    "platform": platform.platform(),
+                    "python_version": sys.version.split()[0],
+                    "cwd": os.getcwd(),
+                },
+            }
+
+            # Add additional context
+            if additional_context:
+                full_context["additional_context"] = additional_context
+
+            with open(context_json_path, "w", encoding="utf-8") as f:
+                json.dump(full_context, f, indent=2, ensure_ascii=False)
+            logger.info(f"{log_prefix}   ✅ Context JSON (for LLM) saved")
+
+        except Exception as ctx_err:
+            logger.error(
+                f"{log_prefix}   ❌ Context JSON failed: {ctx_err}", exc_info=True
+            )
+
         logger.info(
             f"{log_prefix} 🎉 Comprehensive snapshot complete: {snapshot_dir.name}"
         )
@@ -429,7 +552,9 @@ async def save_comprehensive_snapshot(
         return ""
 
 
-async def save_error_snapshot_legacy(error_name: str = "error") -> None:
+async def save_error_snapshot_legacy(
+    error_name: str = "error", error_exception: Optional[Exception] = None
+) -> None:
     """
     Legacy error snapshot function for backward compatibility.
 
@@ -440,6 +565,7 @@ async def save_error_snapshot_legacy(error_name: str = "error") -> None:
 
     Args:
         error_name: Error name with optional req_id suffix (e.g., "error_hbfu521")
+        error_exception: Optional exception object
     """
     import server
 
@@ -472,4 +598,56 @@ async def save_error_snapshot_legacy(error_name: str = "error") -> None:
         req_id=req_id,
         error_stage="Legacy snapshot call",
         additional_context={"legacy_call": True},
+        error_exception=error_exception,
     )
+
+
+def capture_error_snapshot(func):
+    """
+    Decorator to capture comprehensive snapshot on error.
+    Expects 'self' to have .page, .req_id attributes.
+    """
+    import functools
+
+    @functools.wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        try:
+            return await func(self, *args, **kwargs)
+        except Exception as e:
+            # Avoid recursive loops if snapshot fails
+            # Check if we already handled this exception (optional, but good)
+            if getattr(e, "_snapshot_captured", False):
+                raise e
+
+            try:
+                page = getattr(self, "page", None)
+                req_id = getattr(self, "req_id", "unknown")
+
+                # Check for client disconnected error to avoid noise
+                if type(e).__name__ == "ClientDisconnectedError":
+                    pass
+
+                if page:
+                    await save_comprehensive_snapshot(
+                        page=page,
+                        error_name=f"{func.__name__}_error",
+                        req_id=req_id,
+                        error_stage=f"Error in {func.__name__}",
+                        additional_context={
+                            "args": safe_serialize(args),
+                            "kwargs": safe_serialize(kwargs),
+                        },
+                        error_exception=e,
+                    )
+
+                # Mark exception as captured
+                setattr(e, "_snapshot_captured", True)
+
+            except Exception as snapshot_err:
+                logger.error(
+                    f"Failed to capture error snapshot in decorator: {snapshot_err}"
+                )
+
+            raise e
+
+    return wrapper

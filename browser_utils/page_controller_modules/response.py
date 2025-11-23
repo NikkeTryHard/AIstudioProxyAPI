@@ -3,6 +3,12 @@ from typing import Callable
 
 from playwright.async_api import expect as expect_async
 
+from browser_utils.debug_utils import capture_error_snapshot
+from browser_utils.operations import (
+    _get_final_response_content,
+    _wait_for_response_completion,
+    save_error_snapshot,
+)
 from config import (
     EDIT_MESSAGE_BUTTON_SELECTOR,
     PROMPT_TEXTAREA_SELECTOR,
@@ -11,13 +17,14 @@ from config import (
     SUBMIT_BUTTON_SELECTOR,
 )
 from models import ClientDisconnectedError
-from browser_utils.operations import _wait_for_response_completion, _get_final_response_content, save_error_snapshot
+
 from .base import BaseController
 
 
 class ResponseController(BaseController):
     """Handles retrieval of AI responses."""
 
+    @capture_error_snapshot
     async def get_response(self, check_client_disconnected: Callable) -> str:
         """获取响应内容。"""
         self.logger.info(f"[{self.req_id}] 等待并获取响应...")
@@ -69,10 +76,15 @@ class ResponseController(BaseController):
 
             # --- DEBUG: Check for function call and sleep ---
             import json
+
             try:
-                if final_content and final_content.strip().startswith('{'):
+                if final_content and final_content.strip().startswith("{"):
                     data = json.loads(final_content)
-                    if isinstance(data, dict) and "name" in data and "arguments" in data:
+                    if (
+                        isinstance(data, dict)
+                        and "name" in data
+                        and "arguments" in data
+                    ):
                         print(f"\n[DEBUG] Detected Function Call in response.py!")
                         print(f"[DEBUG] Content: {final_content[:200]}...")
                         print(f"[DEBUG] Sleeping 10s for inspection...")
@@ -87,6 +99,5 @@ class ResponseController(BaseController):
 
         except Exception as e:
             self.logger.error(f"[{self.req_id}] ❌ 获取响应时出错: {e}")
-            if not isinstance(e, ClientDisconnectedError):
-                await save_error_snapshot(f"get_response_error_{self.req_id}")
+            # Snapshot handled by decorator
             raise

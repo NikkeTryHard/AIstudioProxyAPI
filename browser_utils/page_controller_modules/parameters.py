@@ -2,29 +2,31 @@ import asyncio
 import re
 from typing import Any, Callable, Dict, List, Optional
 
-from playwright.async_api import expect as expect_async
 from playwright.async_api import TimeoutError
+from playwright.async_api import expect as expect_async
 
+from browser_utils.operations import save_error_snapshot
 from config import (
+    CLICK_TIMEOUT_MS,
     DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_STOP_SEQUENCES,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
+    ENABLE_GOOGLE_SEARCH,
+    ENABLE_URL_CONTEXT,
+    FUNCTION_CALLING_TOGGLE_SELECTOR,
+    GROUNDING_WITH_GOOGLE_SEARCH_TOGGLE_SELECTOR,
+    MAT_CHIP_REMOVE_BUTTON_SELECTOR,
     MAX_OUTPUT_TOKENS_SELECTOR,
     STOP_SEQUENCE_INPUT_SELECTOR,
     TEMPERATURE_INPUT_SELECTOR,
     TOP_P_INPUT_SELECTOR,
-    MAT_CHIP_REMOVE_BUTTON_SELECTOR,
-    ENABLE_URL_CONTEXT,
     USE_URL_CONTEXT_SELECTOR,
-    GROUNDING_WITH_GOOGLE_SEARCH_TOGGLE_SELECTOR,
-    FUNCTION_CALLING_TOGGLE_SELECTOR,
-    ENABLE_GOOGLE_SEARCH,
-    CLICK_TIMEOUT_MS,
 )
 from models import ClientDisconnectedError
-from browser_utils.operations import save_error_snapshot
+
 from .base import BaseController
+
 
 class ParameterController(BaseController):
     """Handles parameter adjustments (temperature, tokens, etc.)."""
@@ -97,18 +99,24 @@ class ParameterController(BaseController):
         # 调整“思考预算” - handled by ThinkingController but called here to maintain flow?
         # Ideally adjust_parameters should coordinate, but if we split, we need to ensure method availability.
         # We will assume the final class inherits from all mixins.
-        if hasattr(self, '_handle_thinking_budget'):
-             await self._handle_thinking_budget(request_params, model_id_to_use, check_client_disconnected)
+        if hasattr(self, "_handle_thinking_budget"):
+            await self._handle_thinking_budget(
+                request_params, model_id_to_use, check_client_disconnected
+            )
 
         # 调整“思考预算” - handled by ThinkingController but called here to maintain flow?
         # Ideally adjust_parameters should coordinate, but if we split, we need to ensure method availability.
         # We will assume the final class inherits from all mixins.
-        if hasattr(self, '_handle_thinking_budget'):
-             await self._handle_thinking_budget(request_params, model_id_to_use, check_client_disconnected)
+        if hasattr(self, "_handle_thinking_budget"):
+            await self._handle_thinking_budget(
+                request_params, model_id_to_use, check_client_disconnected
+            )
 
         # 综合调整 Function Calling 和 Google Search 开关
         # 优化逻辑：避免无效切换，优先处理冲突
-        await self._adjust_tools_configuration(request_params, check_client_disconnected)
+        await self._adjust_tools_configuration(
+            request_params, check_client_disconnected
+        )
 
     async def _adjust_tools_configuration(
         self, request_params: Dict[str, Any], check_client_disconnected: Callable
@@ -132,7 +140,9 @@ class ParameterController(BaseController):
         if need_fc:
             # 场景 1: 需要 Function Calling
             # 步骤 A: 确保 Google Search 关闭
-            await self._set_google_search_state(False, check_client_disconnected, force_action=True)
+            await self._set_google_search_state(
+                False, check_client_disconnected, force_action=True
+            )
 
             # 步骤 B: 确保 Function Calling 开启
             await self._set_function_calling_state(True, check_client_disconnected)
@@ -144,7 +154,9 @@ class ParameterController(BaseController):
             # 步骤 B: 根据需求调整 Google Search
             await self._set_google_search_state(need_gs, check_client_disconnected)
 
-    async def _set_function_calling_state(self, should_enable: bool, check_client_disconnected: Callable):
+    async def _set_function_calling_state(
+        self, should_enable: bool, check_client_disconnected: Callable
+    ):
         """设置 Function Calling 开关状态"""
         toggle_selector = FUNCTION_CALLING_TOGGLE_SELECTOR
         try:
@@ -152,7 +164,9 @@ class ParameterController(BaseController):
             try:
                 toggle_locator = self.page.locator(toggle_selector).first
                 if not await toggle_locator.is_visible(timeout=3000):
-                    self.logger.info(f"[{self.req_id}] (FC) 未找到可见的 Function Calling 开关，跳过。")
+                    self.logger.info(
+                        f"[{self.req_id}] (FC) 未找到可见的 Function Calling 开关，跳过。"
+                    )
                     return
             except Exception:
                 return
@@ -165,7 +179,9 @@ class ParameterController(BaseController):
             is_currently_checked = is_checked_str == "true"
 
             need_change = should_enable != is_currently_checked
-            self.logger.info(f"[{self.req_id}] (FC) 状态检查 - 当前: {is_currently_checked}, 期望: {should_enable}, 需要变更: {need_change}")
+            self.logger.info(
+                f"[{self.req_id}] (FC) 状态检查 - 当前: {is_currently_checked}, 期望: {should_enable}, 需要变更: {need_change}"
+            )
 
             if need_change:
                 action = "打开" if should_enable else "关闭"
@@ -175,16 +191,22 @@ class ParameterController(BaseController):
                 except Exception:
                     pass
                 await toggle_locator.click(timeout=CLICK_TIMEOUT_MS)
-                await self._check_disconnect(check_client_disconnected, f"Function Calling - 点击{action}后")
+                await self._check_disconnect(
+                    check_client_disconnected, f"Function Calling - 点击{action}后"
+                )
 
                 # Smart wait: wait for the attribute to change instead of fixed sleep
                 expected_state = "true" if should_enable else "false"
                 try:
-                    await expect_async(toggle_locator).to_have_attribute("aria-checked", expected_state, timeout=3000)
+                    await expect_async(toggle_locator).to_have_attribute(
+                        "aria-checked", expected_state, timeout=3000
+                    )
                     self.logger.info(f"[{self.req_id}] (FC) ✅ 成功{action}。")
                 except Exception:
                     new_state = await toggle_locator.get_attribute("aria-checked")
-                    self.logger.warning(f"[{self.req_id}] (FC) ⚠️ {action}验证超时。当前状态: '{new_state}'")
+                    self.logger.warning(
+                        f"[{self.req_id}] (FC) ⚠️ {action}验证超时。当前状态: '{new_state}'"
+                    )
             else:
                 self.logger.info(f"[{self.req_id}] (FC) 状态已符合期望，无需操作。")
 
@@ -193,26 +215,31 @@ class ParameterController(BaseController):
             if isinstance(e, ClientDisconnectedError):
                 raise
 
-    async def _set_google_search_state(self, should_enable: bool, check_client_disconnected: Callable, force_action: bool = False):
+    async def _set_google_search_state(
+        self,
+        should_enable: bool,
+        check_client_disconnected: Callable,
+        force_action: bool = False,
+    ):
         """设置 Google Search 开关状态"""
         toggle_selector = GROUNDING_WITH_GOOGLE_SEARCH_TOGGLE_SELECTOR
         try:
             toggle_locator = self.page.locator(toggle_selector)
             if not await toggle_locator.is_visible(timeout=5000):
-                 self.logger.warning(f"[{self.req_id}] (GS) 开关未找到/不可见。")
-                 return
+                self.logger.warning(f"[{self.req_id}] (GS) 开关未找到/不可见。")
+                return
 
             # 如果强制操作且被禁用，可能无法操作，但我们记录日志
             if not await toggle_locator.is_enabled():
                 if force_action and not should_enable:
-                     # 如果我们想关闭它，但它被禁用，检查它是否已经是关闭的
-                     is_checked_str = await toggle_locator.get_attribute("aria-checked")
-                     if is_checked_str == "false":
-                         self.logger.info(f"[{self.req_id}] (GS) 开关禁用但已关闭，符合期望。")
-                         return
-                     else:
-                         self.logger.warning(f"[{self.req_id}] (GS) 开关禁用且开启，无法强制关闭！")
-                         return
+                    # 如果我们想关闭它，但它被禁用，检查它是否已经是关闭的
+                    is_checked_str = await toggle_locator.get_attribute("aria-checked")
+                    if is_checked_str == "false":
+                        self.logger.info(f"[{self.req_id}] (GS) 开关禁用但已关闭，符合期望。")
+                        return
+                    else:
+                        self.logger.warning(f"[{self.req_id}] (GS) 开关禁用且开启，无法强制关闭！")
+                        return
 
                 self.logger.warning(f"[{self.req_id}] (GS) 开关在 UI 中禁用，跳过。")
                 return
@@ -224,10 +251,12 @@ class ParameterController(BaseController):
 
             # 如果只是为了"确保关闭"且本来就是关闭的，日志级别可以低一点
             if force_action and not should_enable and not is_currently_checked:
-                 self.logger.info(f"[{self.req_id}] (GS) 已处于关闭状态 (Pre-check)。")
-                 return
+                self.logger.info(f"[{self.req_id}] (GS) 已处于关闭状态 (Pre-check)。")
+                return
 
-            self.logger.info(f"[{self.req_id}] (GS) 状态检查 - 当前: {is_currently_checked}, 期望: {should_enable}, 需要变更: {need_change}")
+            self.logger.info(
+                f"[{self.req_id}] (GS) 状态检查 - 当前: {is_currently_checked}, 期望: {should_enable}, 需要变更: {need_change}"
+            )
 
             if need_change:
                 action = "打开" if should_enable else "关闭"
@@ -237,7 +266,9 @@ class ParameterController(BaseController):
                 except Exception:
                     pass
                 await toggle_locator.click(timeout=CLICK_TIMEOUT_MS)
-                await self._check_disconnect(check_client_disconnected, f"Google Search - 点击{action}后")
+                await self._check_disconnect(
+                    check_client_disconnected, f"Google Search - 点击{action}后"
+                )
                 await asyncio.sleep(0.5)
 
                 new_state = await toggle_locator.get_attribute("aria-checked")
@@ -245,7 +276,9 @@ class ParameterController(BaseController):
                 if success:
                     self.logger.info(f"[{self.req_id}] (GS) ✅ 成功{action}。")
                 else:
-                    self.logger.warning(f"[{self.req_id}] (GS) ⚠️ {action}失败。当前状态: '{new_state}'")
+                    self.logger.warning(
+                        f"[{self.req_id}] (GS) ⚠️ {action}失败。当前状态: '{new_state}'"
+                    )
             else:
                 self.logger.info(f"[{self.req_id}] (GS) 状态已符合期望，无需操作。")
 
@@ -329,6 +362,7 @@ class ParameterController(BaseController):
                         # But save_error_snapshot is in browser_utils.operations.
                         # We should probably inject it or import it.
                         from browser_utils.operations import save_error_snapshot
+
                         await save_error_snapshot(
                             f"temperature_verify_fail_{self.req_id}"
                         )
@@ -337,11 +371,13 @@ class ParameterController(BaseController):
                 self.logger.error(f"[{self.req_id}] 转换温度值为浮点数时出错. 错误: {ve}。清除缓存中的温度。")
                 page_params_cache.pop("temperature", None)
                 from browser_utils.operations import save_error_snapshot
+
                 await save_error_snapshot(f"temperature_value_error_{self.req_id}")
             except Exception as pw_err:
                 self.logger.error(f"[{self.req_id}] ❌ 操作温度输入框时发生错误: {pw_err}。清除缓存中的温度。")
                 page_params_cache.pop("temperature", None)
                 from browser_utils.operations import save_error_snapshot
+
                 await save_error_snapshot(f"temperature_playwright_error_{self.req_id}")
                 if isinstance(pw_err, ClientDisconnectedError):
                     raise
@@ -450,6 +486,7 @@ class ParameterController(BaseController):
                         )
                         page_params_cache.pop("max_output_tokens", None)
                         from browser_utils.operations import save_error_snapshot
+
                         await save_error_snapshot(
                             f"max_tokens_verify_fail_{self.req_id}"
                         )
@@ -458,11 +495,13 @@ class ParameterController(BaseController):
                 self.logger.error(f"[{self.req_id}] 转换最大输出 Tokens 值时出错: {ve}。清除缓存。")
                 page_params_cache.pop("max_output_tokens", None)
                 from browser_utils.operations import save_error_snapshot
+
                 await save_error_snapshot(f"max_tokens_value_error_{self.req_id}")
             except Exception as e:
                 self.logger.error(f"[{self.req_id}] ❌ 调整最大输出 Tokens 时出错: {e}。清除缓存。")
                 page_params_cache.pop("max_output_tokens", None)
                 from browser_utils.operations import save_error_snapshot
+
                 await save_error_snapshot(f"max_tokens_error_{self.req_id}")
                 if isinstance(e, ClientDisconnectedError):
                     raise
@@ -540,6 +579,7 @@ class ParameterController(BaseController):
                 self.logger.error(f"[{self.req_id}] ❌ 设置停止序列时出错: {e}")
                 page_params_cache.pop("stop_sequences", None)
                 from browser_utils.operations import save_error_snapshot
+
                 await save_error_snapshot(f"stop_sequence_error_{self.req_id}")
                 if isinstance(e, ClientDisconnectedError):
                     raise
@@ -585,6 +625,7 @@ class ParameterController(BaseController):
                         f"[{self.req_id}] ⚠️ Top P 更新后验证失败。页面显示: {new_top_p_float}, 期望: {clamped_top_p}"
                     )
                     from browser_utils.operations import save_error_snapshot
+
                     await save_error_snapshot(f"top_p_verify_fail_{self.req_id}")
             else:
                 self.logger.info(
@@ -594,10 +635,12 @@ class ParameterController(BaseController):
         except (ValueError, TypeError) as ve:
             self.logger.error(f"[{self.req_id}] 转换 Top P 值时出错: {ve}")
             from browser_utils.operations import save_error_snapshot
+
             await save_error_snapshot(f"top_p_value_error_{self.req_id}")
         except Exception as e:
             self.logger.error(f"[{self.req_id}] ❌ 调整 Top P 时出错: {e}")
             from browser_utils.operations import save_error_snapshot
+
             await save_error_snapshot(f"top_p_error_{self.req_id}")
             if isinstance(e, ClientDisconnectedError):
                 raise
@@ -700,7 +743,9 @@ class ParameterController(BaseController):
                         elif tool.get("google_search_retrieval") is None:
                             # 如果没有明确标记为 Google Search
                             # 且具有 name 属性 (可能是函数名)
-                            possible_name = tool.get("name") or tool.get("function", {}).get("name")
+                            possible_name = tool.get("name") or tool.get(
+                                "function", {}
+                            ).get("name")
                             if possible_name and possible_name != "googleSearch":
                                 has_function_tool = True
                                 break

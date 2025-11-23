@@ -1,9 +1,12 @@
 import asyncio
 from typing import Callable
 
-from playwright.async_api import expect as expect_async
 from playwright.async_api import TimeoutError
+from playwright.async_api import expect as expect_async
 
+from browser_utils.debug_utils import capture_error_snapshot
+from browser_utils.initialization import enable_temporary_chat_mode
+from browser_utils.operations import save_error_snapshot
 from config import (
     CLEAR_CHAT_BUTTON_SELECTOR,
     CLEAR_CHAT_CONFIRM_BUTTON_SELECTOR,
@@ -15,14 +18,14 @@ from config import (
     WAIT_FOR_ELEMENT_TIMEOUT_MS,
 )
 from models import ClientDisconnectedError
-from browser_utils.operations import save_error_snapshot
-from browser_utils.initialization import enable_temporary_chat_mode
+
 from .base import BaseController
 
 
 class ChatController(BaseController):
     """Handles chat history management."""
 
+    @capture_error_snapshot
     async def clear_chat_history(self, check_client_disconnected: Callable):
         """清空聊天记录。"""
         self.logger.info(f"[{self.req_id}] 开始清空聊天记录...")

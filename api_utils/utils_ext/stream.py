@@ -3,11 +3,14 @@ import json
 from typing import Any, AsyncGenerator
 
 
-async def use_stream_response(req_id: str, page: Any = None) -> AsyncGenerator[Any, None]:
-    from server import STREAM_QUEUE, logger
+async def use_stream_response(
+    req_id: str, page: Any = None
+) -> AsyncGenerator[Any, None]:
     import queue
-    from browser_utils.operations import get_response_via_function_card
     import time
+
+    from browser_utils.operations import get_response_via_function_card
+    from server import STREAM_QUEUE, logger
 
     if STREAM_QUEUE is None:
         logger.warning(f"[{req_id}] STREAM_QUEUE is None, 无法使用流响应")
@@ -108,9 +111,13 @@ async def use_stream_response(req_id: str, page: Any = None) -> AsyncGenerator[A
                 if page and time_since_last_activity > POLL_INTERVAL:
                     # Poll DOM
                     try:
-                        func_call_json = await get_response_via_function_card(page, req_id)
+                        func_call_json = await get_response_via_function_card(
+                            page, req_id
+                        )
                         if func_call_json:
-                            logger.info(f"[{req_id}] [非流式] 检测到 DOM 中的函数调用，正在回退到 DOM 提取...")
+                            logger.info(
+                                f"[{req_id}] [非流式] 检测到 DOM 中的函数调用，正在回退到 DOM 提取..."
+                            )
 
                             # Parse the JSON to get tool calls list
                             try:
@@ -135,20 +142,24 @@ async def use_stream_response(req_id: str, page: Any = None) -> AsyncGenerator[A
                                             fn_args = json.loads(fn_args)
                                         except:
                                             pass
-                                    functions_list.append({"name": fn_name, "params": fn_args})
+                                    functions_list.append(
+                                        {"name": fn_name, "params": fn_args}
+                                    )
 
                                 # DEBUG: Log function call content (no sleep)
-                                logger.info(f"[{req_id}] Function Call Detected via DOM Fallback: {len(functions_list)} calls")
+                                logger.info(
+                                    f"[{req_id}] Function Call Detected via DOM Fallback: {len(functions_list)} calls"
+                                )
 
                                 # Yield constructed packet
                                 yield {
                                     "done": True,
                                     "body": "",
                                     "reason": "function_call",
-                                    "function": functions_list
+                                    "function": functions_list,
                                 }
 
-                                return # End generator
+                                return  # End generator
                             except Exception as parse_err:
                                 logger.error(f"[{req_id}] 解析 DOM 函数调用数据失败: {parse_err}")
                     except Exception as dom_err:
@@ -162,11 +173,8 @@ async def use_stream_response(req_id: str, page: Any = None) -> AsyncGenerator[A
                         f"[{req_id}] 等待流数据... ({empty_count}/{max_empty_retries}, 已收到:{received_items_count}项)"
                     )
                 if empty_count >= max_empty_retries:
-
                     if not data_received:
-                        logger.error(
-                            f"[{req_id}] 流响应队列空读取次数达到上限且未收到任何数据，可能是辅助流未启动或出错"
-                        )
+                        logger.error(f"[{req_id}] 流响应队列空读取次数达到上限且未收到任何数据，可能是辅助流未启动或出错")
                     else:
                         logger.warning(
                             f"[{req_id}] 流响应队列空读取次数达到上限 ({max_empty_retries})，结束读取"
@@ -191,8 +199,9 @@ async def use_stream_response(req_id: str, page: Any = None) -> AsyncGenerator[A
 
 
 async def clear_stream_queue():
-    from server import STREAM_QUEUE, logger
     import queue
+
+    from server import STREAM_QUEUE, logger
 
     if STREAM_QUEUE is None:
         logger.info("流队列未初始化或已被禁用，跳过清空操作。")
@@ -208,9 +217,7 @@ async def clear_stream_queue():
                     f"清空流式队列项 #{cleared_count}: {type(data_chunk)} - {str(data_chunk)[:100]}..."
                 )
         except queue.Empty:
-            logger.info(
-                f"流式队列已清空 (捕获到 queue.Empty)。清空项数: {cleared_count}"
-            )
+            logger.info(f"流式队列已清空 (捕获到 queue.Empty)。清空项数: {cleared_count}")
             break
         except Exception as e:
             logger.error(
