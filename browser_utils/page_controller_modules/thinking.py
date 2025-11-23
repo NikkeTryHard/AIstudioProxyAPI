@@ -85,11 +85,8 @@ class ThinkingController(BaseController):
             # 跳过无预算开关的模型
             if self._uses_thinking_level(model_id_to_use):
                 return
-            # 若关闭思考，则确保预算开关关闭（兼容旧UI）
-            await self._control_thinking_budget_toggle(
-                should_be_checked=False,
-                check_client_disconnected=check_client_disconnected,
-            )
+            # 若关闭思考，预算开关通常会被隐藏，因此跳过操作以避免超时错误
+            self.logger.info(f"[{self.req_id}] 思考模式未启用，跳过预算开关设置。")
             return
 
         # 2) 已开启思考：根据模型类型设置等级或预算

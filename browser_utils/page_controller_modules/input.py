@@ -11,6 +11,18 @@ from config import (
     PROMPT_TEXTAREA_SELECTOR,
     RESPONSE_CONTAINER_SELECTOR,
     SUBMIT_BUTTON_SELECTOR,
+    AUTOSIZE_WRAPPER_SELECTOR,
+    EDIT_FUNCTION_BUTTON_SELECTOR,
+    FUNCTION_EDITOR_TEXTAREA_SELECTOR,
+    CODE_EDITOR_TAB_SELECTOR,
+    SAVE_FUNCTION_BUTTON_SELECTOR,
+    INSERT_ASSETS_BUTTON_SELECTOR,
+    UPLOAD_MENU_CONTAINER_SELECTOR,
+    UPLOAD_MENU_ITEM_SELECTOR,
+    UPLOAD_MENU_ITEM_TEXT_SELECTOR,
+    OVERLAY_BACKDROP_SELECTOR,
+    DIALOG_AGREE_BUTTONS,
+    COPYRIGHT_ACK_BUTTON_SELECTOR,
 )
 from models import ClientDisconnectedError
 
@@ -29,7 +41,7 @@ class InputController(BaseController):
         check_client_disconnected: Callable,
     ) -> None:
         """提交提示到页面。"""
-        # 如果有函数定义，先注入
+        # 1. 注入函数定义
         if functions_json:
             await self.inject_functions(functions_json)
             await self._check_disconnect(
@@ -37,124 +49,135 @@ class InputController(BaseController):
             )
 
         self.logger.info(f"[{self.req_id}] 填充并提交提示 ({len(prompt)} chars)...")
-        prompt_textarea_locator = self.page.locator(PROMPT_TEXTAREA_SELECTOR)
-        autosize_wrapper_locator = self.page.locator(
-            "ms-prompt-input-wrapper ms-autosize-textarea"
+
+        # 2. 填充文本
+        await self._fill_prompt_text(prompt, check_client_disconnected)
+
+        # 3. 上传文件
+        if image_list:
+            await self._handle_file_uploads(image_list)
+
+        # 4. 等待发送按钮启用
+        submit_button = self.page.locator(SUBMIT_BUTTON_SELECTOR)
+        await self._wait_for_submit_enabled(submit_button, check_client_disconnected)
+
+        # 5. 执行提交
+        await self._execute_submission(submit_button, check_client_disconnected)
+
+    async def _fill_prompt_text(self, prompt: str, check_client_disconnected: Callable) -> None:
+        """填充提示文本框。"""
+        prompt_textarea = self.page.locator(PROMPT_TEXTAREA_SELECTOR)
+        autosize_wrapper = self.page.locator(AUTOSIZE_WRAPPER_SELECTOR)
+
+        await expect_async(prompt_textarea).to_be_visible(timeout=5000)
+        await self._check_disconnect(check_client_disconnected, "After Input Visible")
+
+        # 使用 JavaScript 填充文本以绕过可能的React限制
+        await prompt_textarea.evaluate(
+            """
+            (element, text) => {
+                element.value = text;
+                element.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+            }
+            """,
+            prompt,
         )
-        submit_button_locator = self.page.locator(SUBMIT_BUTTON_SELECTOR)
+        await autosize_wrapper.evaluate(
+            '(element, text) => { element.setAttribute("data-value", text); }',
+            prompt,
+        )
+        await self._check_disconnect(check_client_disconnected, "After Input Fill")
 
+    async def _handle_file_uploads(self, image_list: List[str]) -> None:
+        """处理文件上传。"""
         try:
-            await expect_async(prompt_textarea_locator).to_be_visible(timeout=5000)
+            self.logger.info(f"[{self.req_id}] 待上传附件数量: {len(image_list)}")
+            ok = await self._open_upload_menu_and_choose_file(image_list)
+            if not ok:
+                self.logger.error(f"[{self.req_id}] 在上传文件时发生错误: 通过菜单方式未能设置文件")
+        except Exception as e:
+            self.logger.error(f"[{self.req_id}] 文件上传过程异常: {e}")
+
+    async def _wait_for_submit_enabled(
+        self, submit_button, check_client_disconnected: Callable
+    ) -> None:
+        """等待提交按钮变为可用状态。"""
+        wait_timeout_ms = 100000
+        try:
             await self._check_disconnect(
-                check_client_disconnected, "After Input Visible"
+                check_client_disconnected, "填充提示后等待发送按钮启用 - 前置检查"
             )
-
-            # 使用 JavaScript 填充文本
-            await prompt_textarea_locator.evaluate(
-                """
-                (element, text) => {
-                    element.value = text;
-                    element.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-                    element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-                }
-                """,
-                prompt,
-            )
-            await autosize_wrapper_locator.evaluate(
-                '(element, text) => { element.setAttribute("data-value", text); }',
-                prompt,
-            )
-            await self._check_disconnect(check_client_disconnected, "After Input Fill")
-
-            # 上传（仅使用菜单 + 隐藏 input 设置文件；处理可能的授权弹窗）
-            try:
-                self.logger.info(f"[{self.req_id}] 待上传附件数量: {len(image_list)}")
-            except Exception:
-                pass
-            if len(image_list) > 0:
-                ok = await self._open_upload_menu_and_choose_file(image_list)
-                if not ok:
-                    self.logger.error(f"[{self.req_id}] 在上传文件时发生错误: 通过菜单方式未能设置文件")
-
-            # 等待发送按钮启用
-            wait_timeout_ms_submit_enabled = 100000
-            try:
-                await self._check_disconnect(
-                    check_client_disconnected, "填充提示后等待发送按钮启用 - 前置检查"
-                )
-                await expect_async(submit_button_locator).to_be_enabled(
-                    timeout=wait_timeout_ms_submit_enabled
-                )
-                self.logger.info(f"[{self.req_id}] ✅ 发送按钮已启用。")
-            except Exception as e_pw_enabled:
-                self.logger.error(f"[{self.req_id}] ❌ 等待发送按钮启用超时或错误: {e_pw_enabled}")
-                await save_error_snapshot(f"submit_button_enable_timeout_{self.req_id}")
-                raise
-
-            await self._check_disconnect(
-                check_client_disconnected, "After Submit Button Enabled"
-            )
-            await asyncio.sleep(0.3)
-
-            # 优先点击按钮提交，其次回车提交，最后组合键提交
-            button_clicked = False
-            try:
-                self.logger.info(f"[{self.req_id}] 尝试点击提交按钮...")
-                # 提交前再处理一次潜在对话框，避免按钮点击被拦截
-                await self._handle_post_upload_dialog()
-                await submit_button_locator.click(timeout=5000)
-                self.logger.info(f"[{self.req_id}] ✅ 提交按钮点击完成。")
-                button_clicked = True
-            except Exception as click_err:
-                self.logger.error(f"[{self.req_id}] ❌ 提交按钮点击失败: {click_err}")
-                await save_error_snapshot(f"submit_button_click_fail_{self.req_id}")
-
-            if not button_clicked:
-                self.logger.info(f"[{self.req_id}] 按钮提交失败，尝试回车键提交...")
-                submitted_successfully = await self._try_enter_submit(
-                    prompt_textarea_locator, check_client_disconnected
-                )
-                if not submitted_successfully:
-                    self.logger.info(f"[{self.req_id}] 回车提交失败，尝试组合键提交...")
-                    combo_ok = await self._try_combo_submit(
-                        prompt_textarea_locator, check_client_disconnected
-                    )
-                    if not combo_ok:
-                        self.logger.error(f"[{self.req_id}] ❌ 组合键提交也失败。")
-                        raise Exception(
-                            "Submit failed: Button, Enter, and Combo key all failed"
-                        )
-
-            await self._check_disconnect(check_client_disconnected, "After Submit")
-
-        except Exception as e_input_submit:
-            self.logger.error(f"[{self.req_id}] 输入和提交过程中发生错误: {e_input_submit}")
-            if not isinstance(e_input_submit, ClientDisconnectedError):
-                await save_error_snapshot(f"input_submit_error_{self.req_id}")
+            await expect_async(submit_button).to_be_enabled(timeout=wait_timeout_ms)
+            self.logger.info(f"[{self.req_id}] ✅ 发送按钮已启用。")
+        except Exception as e:
+            self.logger.error(f"[{self.req_id}] ❌ 等待发送按钮启用超时或错误: {e}")
+            await save_error_snapshot(f"submit_button_enable_timeout_{self.req_id}")
             raise
+
+        await self._check_disconnect(
+            check_client_disconnected, "After Submit Button Enabled"
+        )
+        await asyncio.sleep(0.3)
+
+    async def _execute_submission(
+        self, submit_button, check_client_disconnected: Callable
+    ) -> None:
+        """执行提交操作：优先点击按钮，其次回车，最后组合键。"""
+        button_clicked = False
+        try:
+            self.logger.info(f"[{self.req_id}] 尝试点击提交按钮...")
+            # 提交前再处理一次潜在对话框
+            await self._handle_post_upload_dialog()
+            await submit_button.click(timeout=5000)
+            self.logger.info(f"[{self.req_id}] ✅ 提交按钮点击完成。")
+            button_clicked = True
+        except Exception as click_err:
+            self.logger.error(f"[{self.req_id}] ❌ 提交按钮点击失败: {click_err}")
+            await save_error_snapshot(f"submit_button_click_fail_{self.req_id}")
+
+        if not button_clicked:
+            self.logger.info(f"[{self.req_id}] 按钮提交失败，尝试回车键提交...")
+            prompt_textarea = self.page.locator(PROMPT_TEXTAREA_SELECTOR)
+
+            # 尝试普通回车
+            if await self._try_keyboard_submit(prompt_textarea, check_client_disconnected, combo=False):
+                return
+
+            self.logger.info(f"[{self.req_id}] 回车提交失败，尝试组合键提交...")
+            # 尝试组合键
+            if await self._try_keyboard_submit(prompt_textarea, check_client_disconnected, combo=True):
+                return
+
+            self.logger.error(f"[{self.req_id}] ❌ 组合键提交也失败。")
+            raise Exception("Submit failed: Button, Enter, and Combo key all failed")
+
+        await self._check_disconnect(check_client_disconnected, "After Submit")
 
     @capture_error_snapshot
     async def inject_functions(self, functions_json: str) -> None:
         """注入函数定义到 Google AI Studio UI (v3 Refined + v4 Tab Switch + v5 Optimized Waits)。"""
         self.logger.info(f"[{self.req_id}] 正在注入函数定义...")
 
-        EDIT_BUTTON_SELECTOR = "button.edit-function-declarations-button"
-        EDITOR_TEXTAREA_SELECTOR = "ms-text-editor textarea"
-
         # 1. Click Edit Button
-        edit_btn = self.page.locator(EDIT_BUTTON_SELECTOR).first
+        edit_btn = self.page.locator(EDIT_FUNCTION_BUTTON_SELECTOR).first
         try:
             if await edit_btn.is_visible(timeout=2000):
                 await edit_btn.click()
                 self.logger.info(f"[{self.req_id}] 已点击 'Edit' 按钮。")
 
-                # Smart Wait: Wait for editor to appear
+                # Smart Wait: Wait for drawer to appear.
                 try:
-                    await expect_async(
-                        self.page.locator(EDITOR_TEXTAREA_SELECTOR).first
-                    ).to_be_visible(timeout=3000)
+                    code_tab = self.page.locator(CODE_EDITOR_TAB_SELECTOR).filter(has_text="Code Editor").first
+                    await expect_async(code_tab).to_be_visible(timeout=3000)
                 except Exception:
-                    self.logger.warning(f"[{self.req_id}] 等待编辑器出现超时，尝试继续...")
+                    # Fallback: check for textarea if tab logic fails
+                    try:
+                        await expect_async(
+                            self.page.locator(FUNCTION_EDITOR_TEXTAREA_SELECTOR).first
+                        ).to_be_visible(timeout=1000)
+                    except Exception:
+                        self.logger.warning(f"[{self.req_id}] 等待函数编辑器面板出现超时，尝试继续...")
             else:
                 self.logger.warning(f"[{self.req_id}] 'Edit' 按钮不可见。")
         except Exception as e:
@@ -162,9 +185,8 @@ class InputController(BaseController):
 
         # 2. Switch to Code Editor Tab (v4)
         try:
-            # Selector from plantofunctioncalling4.md
             code_tab = (
-                self.page.locator("button[role='tab']")
+                self.page.locator(CODE_EDITOR_TAB_SELECTOR)
                 .filter(has_text="Code Editor")
                 .first
             )
@@ -192,7 +214,7 @@ class InputController(BaseController):
             self.logger.warning(f"[{self.req_id}] 尝试切换标签页时出错 (非致命): {e}")
 
         # 3. Inject JSON
-        editor_area = self.page.locator(EDITOR_TEXTAREA_SELECTOR).first
+        editor_area = self.page.locator(FUNCTION_EDITOR_TEXTAREA_SELECTOR).first
         try:
             await expect_async(editor_area).to_be_visible(timeout=5000)
 
@@ -217,9 +239,8 @@ class InputController(BaseController):
             await save_error_snapshot(f"function_injection_error_{self.req_id}")
 
         # 4. Save & Close (v5)
-        SAVE_BUTTON_SELECTOR = 'button.ms-button-primary[aria-label="Save the current function declarations"]'
         try:
-            save_btn = self.page.locator(SAVE_BUTTON_SELECTOR)
+            save_btn = self.page.locator(SAVE_FUNCTION_BUTTON_SELECTOR)
             # Ensure visible and enabled
             await expect_async(save_btn).to_be_visible(timeout=3000)
 
@@ -248,11 +269,9 @@ class InputController(BaseController):
             except Exception:
                 pass
 
-            trigger = self.page.locator(
-                'button[aria-label="Insert assets such as images, videos, files, or audio"]'
-            )
+            trigger = self.page.locator(INSERT_ASSETS_BUTTON_SELECTOR)
             await trigger.click()
-            menu_container = self.page.locator("div.cdk-overlay-container")
+            menu_container = self.page.locator(UPLOAD_MENU_CONTAINER_SELECTOR)
             # 等待菜单显示
             try:
                 await expect_async(
@@ -271,14 +290,10 @@ class InputController(BaseController):
 
             # 仅使用 aria-label='Upload File' 的菜单项
             try:
-                upload_btn = menu_container.locator(
-                    "div[role='menu'] button[role='menuitem'][aria-label='Upload File']"
-                )
+                upload_btn = menu_container.locator(UPLOAD_MENU_ITEM_SELECTOR)
                 if await upload_btn.count() == 0:
                     # 退化到按文本匹配 Upload File
-                    upload_btn = menu_container.locator(
-                        "div[role='menu'] button[role='menuitem']:has-text('Upload File')"
-                    )
+                    upload_btn = menu_container.locator(UPLOAD_MENU_ITEM_TEXT_SELECTOR)
                 if await upload_btn.count() == 0:
                     self.logger.warning(f"[{self.req_id}] 未找到 'Upload File' 菜单项。")
                     return False
@@ -305,9 +320,7 @@ class InputController(BaseController):
                 return False
             # 关闭可能残留的菜单遮罩
             try:
-                backdrop = self.page.locator(
-                    "div.cdk-overlay-backdrop.cdk-overlay-backdrop-showing, div.cdk-overlay-backdrop.cdk-overlay-transparent-backdrop.cdk-overlay-backdrop-showing"
-                )
+                backdrop = self.page.locator(OVERLAY_BACKDROP_SELECTOR)
                 if await backdrop.count() > 0:
                     await self.page.keyboard.press("Escape")
                     await asyncio.sleep(0.2)
@@ -342,187 +355,15 @@ class InputController(BaseController):
             "Use text-based tool result submission via submit_prompt()."
         )
 
-        # Original implementation preserved below for reference/rollback if needed:
-        # self.logger.info(f"[{self.req_id}] 正在提交工具执行结果 (v3-FixedInput)...")
-        # ... (rest of original code was here)
-
-        # Constants
-        FUNCTION_CHUNK_SELECTOR = "ms-function-call-chunk"
-        SEND_BUTTON_SELECTOR = "button.ms-button-primary"
-
-        try:
-            # 迭代提交每一个工具结果
-            for i, output_item in enumerate(tool_outputs):
-                output_content = output_item.get("output")
-                if not output_content:
-                    continue
-
-                self.logger.info(
-                    f"[{self.req_id}] 处理第 {i+1}/{len(tool_outputs)} 个工具结果..."
-                )
-
-                # 1. 查找活跃的输入框
-                active_input = None
-
-                # Strategy A: Direct efficient search
-                # Try commonly known selectors
-                candidates = [
-                    'input[placeholder="Enter function response"]',
-                    'textarea[placeholder="Enter function response"]',
-                    'input[aria-label="Enter function response"]',
-                    # Broad fallback if specific attributes changed
-                    f"{FUNCTION_CHUNK_SELECTOR} input:not([disabled])",
-                    f"{FUNCTION_CHUNK_SELECTOR} textarea:not([disabled])",
-                ]
-
-                for sel in candidates:
-                    # Only try exact selectors first, broad ones later
-                    if "chunk" in sel:
-                        continue
-
-                    loc = self.page.locator(f"{sel}:not([disabled])").first
-                    if await loc.count() > 0 and await loc.is_visible():
-                        active_input = loc
-                        self.logger.info(f"[{self.req_id}] 通过选择器 {sel} 找到活跃输入框。")
-                        break
-
-                # Strategy B: Deep Search in Chunks (if A failed)
-                if not active_input:
-                    self.logger.warning(f"[{self.req_id}] 未能直接找到活跃输入框，开始深度搜索 chunks...")
-                    chunks = self.page.locator(FUNCTION_CHUNK_SELECTOR)
-                    count = await chunks.count()
-
-                    if count == 0:
-                        self.logger.warning(
-                            f"[{self.req_id}] ⚠️ 未找到任何 ms-function-call-chunk 元素！"
-                        )
-
-                    for idx in range(count):
-                        chunk = chunks.nth(idx)
-
-                        # Ensure expanded
-                        panel_header = chunk.locator("mat-expansion-panel-header").first
-                        if await panel_header.is_visible():
-                            is_expanded = await panel_header.get_attribute(
-                                "aria-expanded"
-                            )
-                            if is_expanded != "true":
-                                self.logger.info(f"[{self.req_id}] 展开折叠的函数卡片 #{idx}...")
-                                await panel_header.click()
-                                await asyncio.sleep(0.5)
-
-                        # Search for ANY input/textarea inside
-                        inputs = chunk.locator("input, textarea")
-                        input_count = await inputs.count()
-
-                        for k in range(input_count):
-                            inp = inputs.nth(k)
-                            # Log details for debugging
-                            try:
-                                html_outer = await inp.evaluate("el => el.outerHTML")
-                                is_vis = await inp.is_visible()
-                                is_en = await inp.is_enabled()
-                                placeholder = (
-                                    await inp.get_attribute("placeholder") or ""
-                                )
-
-                                self.logger.info(
-                                    f"[{self.req_id}] Chunk #{idx} Input #{k}: Visible={is_vis}, Enabled={is_en}, Placeholder='{placeholder}', HTML={html_outer[:100]}..."
-                                )
-
-                                # Basic heuristics for validity
-                                # Ignore file inputs or search inputs if any
-                                type_attr = await inp.get_attribute("type") or "text"
-                                if type_attr in ["file", "hidden", "checkbox", "radio"]:
-                                    continue
-
-                                if is_vis and is_en:
-                                    # Found a candidate!
-                                    active_input = inp
-                                    self.logger.info(f"[{self.req_id}] ✅ 选定上述输入框作为目标。")
-                                    break
-                            except Exception as e:
-                                self.logger.warning(f"Input check failed: {e}")
-
-                        if active_input:
-                            break
-
-                if not active_input:
-                    self.logger.error(f"[{self.req_id}] ❌ 彻底无法找到活跃的函数结果输入框 (第 {i+1} 个)")
-                    # Capture snapshot for analysis
-                    await save_error_snapshot(
-                        f"missing_result_input_deep_{self.req_id}_{i}"
-                    )
-                    raise Exception("Could not find function result input field")
-
-                self.logger.info(f"[{self.req_id}] 找到活跃输入框，正在填充结果...")
-
-                # 确保在视图中
-                await active_input.scroll_into_view_if_needed()
-
-                # 填充内容
-                content_str = str(output_content)
-                await active_input.fill(content_str)
-
-                # 等待一下，让 UI 响应输入并启用发送按钮
-                await asyncio.sleep(0.5)
-
-                # 2. 定位发送按钮 (相对于 active_input 的父级 form)
-                try:
-                    # 找到该 input 所属的 form
-                    # 使用 xpath ancestor 查找最近的 form
-                    form = active_input.locator("xpath=ancestor::form").first
-
-                    # 尝试多种按钮选择器
-                    send_button = form.locator(f"{SEND_BUTTON_SELECTOR}[type='submit']")
-                    if await send_button.count() == 0:
-                        # Fallback: look for any button inside the form that isn't the input itself
-                        send_button = form.locator("button[type='submit']")
-
-                    # 确保按钮可见且启用
-                    await expect_async(send_button).to_be_visible(timeout=2000)
-                    await expect_async(send_button).not_to_be_disabled(timeout=3000)
-
-                    # 点击发送
-                    await send_button.click()
-                    self.logger.info(f"[{self.req_id}] 已点击发送按钮。")
-
-                    # 等待提交处理
-                    await asyncio.sleep(1.0)
-
-                except Exception as btn_err:
-                    self.logger.warning(
-                        f"[{self.req_id}] 发送按钮定位或点击失败: {btn_err}。尝试回车键兜底。"
-                    )
-                    await active_input.press("Enter")
-                    await asyncio.sleep(1.0)
-
-        except Exception as e:
-            self.logger.error(f"[{self.req_id}] 提交工具结果过程中发生错误: {e}")
-            await save_error_snapshot(f"submit_tool_output_error_{self.req_id}")
-            raise
-
     async def _handle_post_upload_dialog(self) -> None:
         """处理上传后可能出现的授权/版权确认对话框，优先点击同意类按钮，不主动关闭重要对话框。"""
         try:
-            overlay_container = self.page.locator("div.cdk-overlay-container")
+            overlay_container = self.page.locator(UPLOAD_MENU_CONTAINER_SELECTOR)
             if await overlay_container.count() == 0:
                 return
 
-            # 候选同意按钮的文本/属性
-            agree_texts = [
-                "Agree",
-                "I agree",
-                "Allow",
-                "Continue",
-                "OK",
-                "确定",
-                "同意",
-                "继续",
-                "允许",
-            ]
             # 统一在 overlay 容器内查找可见按钮
-            for text in agree_texts:
+            for text in DIALOG_AGREE_BUTTONS:
                 try:
                     btn = overlay_container.locator(f"button:has-text('{text}')")
                     if await btn.count() > 0 and await btn.first.is_visible(
@@ -536,9 +377,7 @@ class InputController(BaseController):
                     continue
             # 若存在带 aria-label 的版权按钮
             try:
-                acknow_btn_locator = self.page.locator(
-                    'button[aria-label*="copyright" i], button[aria-label*="acknowledge" i]'
-                )
+                acknow_btn_locator = self.page.locator(COPYRIGHT_ACK_BUTTON_SELECTOR)
                 if (
                     await acknow_btn_locator.count() > 0
                     and await acknow_btn_locator.first.is_visible(timeout=300)
@@ -553,9 +392,7 @@ class InputController(BaseController):
 
             # 等待遮罩层消失（尽量不强制 ESC，避免意外取消）
             try:
-                overlay_backdrop = self.page.locator(
-                    "div.cdk-overlay-backdrop.cdk-overlay-backdrop-showing"
-                )
+                overlay_backdrop = self.page.locator(OVERLAY_BACKDROP_SELECTOR)
                 if await overlay_backdrop.count() > 0:
                     try:
                         await expect_async(overlay_backdrop).to_be_hidden(timeout=3000)
@@ -708,10 +545,10 @@ class InputController(BaseController):
 
         raise last_err or Exception("拖放未能在任何候选目标上触发")
 
-    async def _try_enter_submit(
-        self, prompt_textarea_locator, check_client_disconnected: Callable
+    async def _try_keyboard_submit(
+        self, prompt_textarea_locator, check_client_disconnected: Callable, combo: bool = False
     ) -> bool:
-        """优先使用回车键提交。"""
+        """尝试使用键盘提交 (Enter 或 Combo)。"""
         try:
             await prompt_textarea_locator.focus(timeout=5000)
             await self._check_disconnect(check_client_disconnected, "After Input Focus")
@@ -724,188 +561,95 @@ class InputController(BaseController):
                     await prompt_textarea_locator.input_value(timeout=2000) or ""
                 )
             except Exception:
-                # 如果无法获取原始内容，仍然尝试提交
                 pass
 
-            # 尝试回车键提交
-            self.logger.info(f"[{self.req_id}] 尝试回车键提交")
-            try:
-                await self.page.keyboard.press("Enter")
-            except Exception:
-                try:
-                    await prompt_textarea_locator.press("Enter")
-                except Exception:
-                    pass
+            if combo:
+                await self._perform_combo_press(prompt_textarea_locator)
+            else:
+                await self._perform_enter_press(prompt_textarea_locator)
 
-            await self._check_disconnect(check_client_disconnected, "After Enter Press")
+            await self._check_disconnect(check_client_disconnected, "After Key Press")
             await asyncio.sleep(2.0)
 
-            # 验证提交是否成功
-            submission_success = False
-            try:
-                # 方法1: 检查原始输入框是否清空
-                current_content = (
-                    await prompt_textarea_locator.input_value(timeout=2000) or ""
-                )
-                if original_content and not current_content.strip():
-                    self.logger.info(f"[{self.req_id}] 验证方法1: 输入框已清空，回车键提交成功")
-                    submission_success = True
+            return await self._verify_submission(original_content, prompt_textarea_locator, combo)
 
-                # 方法2: 检查提交按钮状态
-                if not submission_success:
-                    submit_button_locator = self.page.locator(SUBMIT_BUTTON_SELECTOR)
-                    try:
-                        is_disabled = await submit_button_locator.is_disabled(
-                            timeout=2000
-                        )
-                        if is_disabled:
-                            self.logger.info(f"[{self.req_id}] 验证方法2: 提交按钮已禁用，回车键提交成功")
-                            submission_success = True
-                    except Exception:
-                        pass
-
-                # 方法3: 检查是否有响应容器出现
-                if not submission_success:
-                    try:
-                        response_container = self.page.locator(
-                            RESPONSE_CONTAINER_SELECTOR
-                        )
-                        container_count = await response_container.count()
-                        if container_count > 0:
-                            # 检查最后一个容器是否是新的
-                            last_container = response_container.last
-                            if await last_container.is_visible(timeout=1000):
-                                self.logger.info(
-                                    f"[{self.req_id}] 验证方法3: 检测到响应容器，回车键提交成功"
-                                )
-                                submission_success = True
-                    except Exception:
-                        pass
-            except Exception as verify_err:
-                self.logger.warning(f"[{self.req_id}] 回车键提交验证过程出错: {verify_err}")
-                # 出错时假定提交成功，让后续流程继续
-                submission_success = True
-
-            if submission_success:
-                self.logger.info(f"[{self.req_id}] ✅ 回车键提交成功")
-                return True
-            else:
-                self.logger.warning(f"[{self.req_id}] ⚠️ 回车键提交验证失败")
-                return False
-        except Exception as shortcut_err:
-            self.logger.warning(f"[{self.req_id}] 回车键提交失败: {shortcut_err}")
+        except Exception as e:
+            self.logger.warning(f"[{self.req_id}] 键盘提交失败 (Combo={combo}): {e}")
             return False
 
-    async def _try_combo_submit(
-        self, prompt_textarea_locator, check_client_disconnected: Callable
-    ) -> bool:
-        """尝试使用组合键提交 (Meta/Control + Enter)。"""
+    async def _perform_enter_press(self, locator) -> None:
+        """执行回车按键。"""
+        self.logger.info(f"[{self.req_id}] 尝试回车键提交")
+        try:
+            await self.page.keyboard.press("Enter")
+        except Exception:
+            await locator.press("Enter")
+
+    async def _perform_combo_press(self, locator) -> None:
+        """执行组合键 (Meta/Control + Enter) 按键。"""
         import os
 
+        # 检测平台
+        host_os = os.environ.get("HOST_OS_FOR_SHORTCUT")
+        if host_os == "Darwin":
+            is_mac = True
+        elif host_os in ["Windows", "Linux"]:
+            is_mac = False
+        else:
+            # Fallback user agent check
+            try:
+                ua = await self.page.evaluate("() => navigator.userAgent || ''")
+                is_mac = "mac" in ua.lower()
+            except Exception:
+                is_mac = False
+
+        modifier = "Meta" if is_mac else "Control"
+        self.logger.info(f"[{self.req_id}] 尝试组合键提交: {modifier}+Enter")
+
         try:
-            host_os_from_launcher = os.environ.get("HOST_OS_FOR_SHORTCUT")
-            is_mac_determined = False
-            if host_os_from_launcher == "Darwin":
-                is_mac_determined = True
-            elif host_os_from_launcher in ["Windows", "Linux"]:
-                is_mac_determined = False
-            else:
-                try:
-                    user_agent_data_platform = await self.page.evaluate(
-                        "() => navigator.userAgentData?.platform || ''"
-                    )
-                except Exception:
-                    user_agent_string = await self.page.evaluate(
-                        "() => navigator.userAgent || ''"
-                    )
-                    user_agent_string_lower = user_agent_string.lower()
-                    if (
-                        "macintosh" in user_agent_string_lower
-                        or "mac os x" in user_agent_string_lower
-                    ):
-                        user_agent_data_platform = "macOS"
-                    else:
-                        user_agent_data_platform = "Other"
-                is_mac_determined = "mac" in user_agent_data_platform.lower()
+            await self.page.keyboard.press(f"{modifier}+Enter")
+        except Exception:
+            # Fallback manual sequence
+            await self.page.keyboard.down(modifier)
+            await asyncio.sleep(0.05)
+            await self.page.keyboard.press("Enter")
+            await asyncio.sleep(0.05)
+            await self.page.keyboard.up(modifier)
 
-            shortcut_modifier = "Meta" if is_mac_determined else "Control"
-            shortcut_key = "Enter"
+    async def _verify_submission(self, original_content, locator, is_combo) -> bool:
+        """验证提交是否成功。"""
+        desc = "组合键" if is_combo else "回车键"
 
-            await prompt_textarea_locator.focus(timeout=5000)
-            await self._check_disconnect(check_client_disconnected, "After Input Focus")
-            await asyncio.sleep(0.1)
-
-            # 记录提交前的输入框内容，用于验证
-            original_content = ""
-            try:
-                original_content = (
-                    await prompt_textarea_locator.input_value(timeout=2000) or ""
-                )
-            except Exception:
-                pass
-
-            self.logger.info(
-                f"[{self.req_id}] 尝试组合键提交: {shortcut_modifier}+{shortcut_key}"
-            )
-            try:
-                await self.page.keyboard.press(f"{shortcut_modifier}+{shortcut_key}")
-            except Exception:
-                try:
-                    await self.page.keyboard.down(shortcut_modifier)
-                    await asyncio.sleep(0.05)
-                    await self.page.keyboard.press(shortcut_key)
-                    await asyncio.sleep(0.05)
-                    await self.page.keyboard.up(shortcut_modifier)
-                except Exception:
-                    pass
-
-            await self._check_disconnect(check_client_disconnected, "After Combo Press")
-            await asyncio.sleep(2.0)
-
-            submission_success = False
-            try:
-                current_content = (
-                    await prompt_textarea_locator.input_value(timeout=2000) or ""
-                )
-                if original_content and not current_content.strip():
-                    self.logger.info(f"[{self.req_id}] 验证方法1: 输入框已清空，组合键提交成功")
-                    submission_success = True
-                if not submission_success:
-                    submit_button_locator = self.page.locator(SUBMIT_BUTTON_SELECTOR)
-                    try:
-                        is_disabled = await submit_button_locator.is_disabled(
-                            timeout=2000
-                        )
-                        if is_disabled:
-                            self.logger.info(f"[{self.req_id}] 验证方法2: 提交按钮已禁用，组合键提交成功")
-                            submission_success = True
-                    except Exception:
-                        pass
-                if not submission_success:
-                    try:
-                        response_container = self.page.locator(
-                            RESPONSE_CONTAINER_SELECTOR
-                        )
-                        container_count = await response_container.count()
-                        if container_count > 0:
-                            last_container = response_container.last
-                            if await last_container.is_visible(timeout=1000):
-                                self.logger.info(
-                                    f"[{self.req_id}] 验证方法3: 检测到响应容器，组合键提交成功"
-                                )
-                                submission_success = True
-                    except Exception:
-                        pass
-            except Exception as verify_err:
-                self.logger.warning(f"[{self.req_id}] 组合键提交验证过程出错: {verify_err}")
-                submission_success = True
-
-            if submission_success:
-                self.logger.info(f"[{self.req_id}] ✅ 组合键提交成功")
+        # 1. Check if input cleared
+        try:
+            current = await locator.input_value(timeout=2000) or ""
+            if original_content and not current.strip():
+                self.logger.info(f"[{self.req_id}] 验证方法1: 输入框已清空，{desc}提交成功")
                 return True
-            else:
-                self.logger.warning(f"[{self.req_id}] ⚠️ 组合键提交验证失败")
-                return False
-        except Exception as combo_err:
-            self.logger.warning(f"[{self.req_id}] 组合键提交失败: {combo_err}")
-            return False
+        except Exception:
+            pass
+
+        # 2. Check if button disabled
+        try:
+            btn = self.page.locator(SUBMIT_BUTTON_SELECTOR)
+            if await btn.is_disabled(timeout=2000):
+                self.logger.info(f"[{self.req_id}] 验证方法2: 提交按钮已禁用，{desc}提交成功")
+                return True
+        except Exception:
+            pass
+
+        # 3. Check for response bubble
+        try:
+            bubbles = self.page.locator(RESPONSE_CONTAINER_SELECTOR)
+            if await bubbles.count() > 0 and await bubbles.last.is_visible(timeout=1000):
+                 self.logger.info(f"[{self.req_id}] 验证方法3: 检测到响应容器，{desc}提交成功")
+                 return True
+        except Exception:
+            pass
+
+        # Default fallback: assume failure unless exception raised during process?
+        # Original code assumed success on verify error, but let's be strict if verification fails.
+        # However, keeping original behavior of "if verification fails, just log warning but return False"
+        self.logger.warning(f"[{self.req_id}] ⚠️ {desc}提交验证失败")
+        return False
+
