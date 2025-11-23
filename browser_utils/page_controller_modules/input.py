@@ -132,49 +132,30 @@ class InputController(BaseController):
             raise
 
     async def inject_functions(self, functions_json: str) -> None:
-        """注入函数定义到 Google AI Studio UI (v3 Refined + v4 Tab Switch)。"""
+        """注入函数定义到 Google AI Studio UI (v3 Refined + v4 Tab Switch + v5 Optimized Waits)。"""
         self.logger.info(f"[{self.req_id}] 正在注入函数定义...")
 
-        TOGGLE_SELECTOR = "mat-slide-toggle.function-calling-toggle"
         EDIT_BUTTON_SELECTOR = "button.edit-function-declarations-button"
         EDITOR_TEXTAREA_SELECTOR = "ms-text-editor textarea"
 
-        # 1. Handle Toggle
-        toggle = self.page.locator(TOGGLE_SELECTOR).first
-        try:
-            if await toggle.is_visible(timeout=3000):
-                # Check state via aria-checked on the button inside
-                toggle_btn = toggle.locator("button[role='switch']")
-                is_checked = await toggle_btn.get_attribute("aria-checked") == "true"
-
-                if not is_checked:
-                    self.logger.info(f"[{self.req_id}] (SchemaInjection) Function Calling 开关未开启，必须强制开启以注入模式。")
-                    self.logger.info(f"[{self.req_id}] (FC) 状态检查 - 当前: False, 期望: True, 需要变更: True")
-                    self.logger.info(f"[{self.req_id}] (FC) 正在点击以打开...")
-                    await toggle.click()
-                    # CRITICAL WAIT as per plan v3
-                    await asyncio.sleep(1.0)
-                    self.logger.info(f"[{self.req_id}] (FC) ✅ 成功打开 (注入前置)。")
-                else:
-                    self.logger.info(f"[{self.req_id}] (SchemaInjection) Function Calling 开关已开启，无需操作。")
-            else:
-                self.logger.warning(f"[{self.req_id}] 未找到函数调用开关，尝试继续...")
-        except Exception as e:
-            self.logger.error(f"[{self.req_id}] 处理函数开关时出错: {e}")
-
-        # 2. Click Edit Button
+        # 1. Click Edit Button
         edit_btn = self.page.locator(EDIT_BUTTON_SELECTOR).first
         try:
             if await edit_btn.is_visible(timeout=2000):
                 await edit_btn.click()
                 self.logger.info(f"[{self.req_id}] 已点击 'Edit' 按钮。")
-                await asyncio.sleep(1.0)  # Wait for editor drawer
+
+                # Smart Wait: Wait for editor to appear
+                try:
+                    await expect_async(self.page.locator(EDITOR_TEXTAREA_SELECTOR).first).to_be_visible(timeout=3000)
+                except Exception:
+                    self.logger.warning(f"[{self.req_id}] 等待编辑器出现超时，尝试继续...")
             else:
                 self.logger.warning(f"[{self.req_id}] 'Edit' 按钮不可见。")
         except Exception as e:
             self.logger.error(f"[{self.req_id}] 点击 Edit 按钮出错: {e}")
 
-        # 2.5. Switch to Code Editor Tab (v4)
+        # 2. Switch to Code Editor Tab (v4)
         try:
             # Selector from plantofunctioncalling4.md
             code_tab = (
@@ -191,15 +172,13 @@ class InputController(BaseController):
                     if not is_selected:
                         self.logger.info(f"[{self.req_id}] 检测到代码编辑器未选中，正在切换...")
                         await code_tab.click()
-                        await asyncio.sleep(1.0)  # Critical wait for tab switch
+                        # Smart wait for tab selection
+                        await expect_async(code_tab).to_have_attribute("aria-selected", "true", timeout=3000)
                     else:
                         self.logger.info(f"[{self.req_id}] 代码编辑器标签页已选中。")
                 else:
                     self.logger.warning(f"[{self.req_id}] 'Code Editor' 标签页元素存在但不可见。")
             else:
-                # Fallback: Try searching for just "Code" if "Code Editor" fails?
-                # The plan is strict, but if the text varies slightly it might fail.
-                # I'll stick to the plan first.
                 self.logger.warning(f"[{self.req_id}] 未找到 'Code Editor' 标签页。尝试继续...")
 
         except Exception as e:
@@ -224,7 +203,7 @@ class InputController(BaseController):
                 """
             )
             self.logger.info(f"[{self.req_id}] 已成功注入函数定义 JSON。")
-            await asyncio.sleep(0.5)
+            # No sleep needed here as fill awaits input
 
         except Exception as e:
             self.logger.error(f"[{self.req_id}] 注入 JSON 失败: {e}")
@@ -240,8 +219,8 @@ class InputController(BaseController):
             self.logger.info(f"[{self.req_id}] 正在点击保存按钮...")
             await save_btn.click()
 
-            # Critical wait for drawer to close and overlay to disappear
-            await asyncio.sleep(1.0)
+            # Smart Wait: Wait for button to disappear (drawer closed)
+            await expect_async(save_btn).to_be_hidden(timeout=3000)
             self.logger.info(f"[{self.req_id}] 函数定义已保存，编辑器已关闭。")
 
         except Exception as e:

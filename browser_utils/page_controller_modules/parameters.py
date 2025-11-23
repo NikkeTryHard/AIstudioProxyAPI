@@ -176,14 +176,15 @@ class ParameterController(BaseController):
                     pass
                 await toggle_locator.click(timeout=CLICK_TIMEOUT_MS)
                 await self._check_disconnect(check_client_disconnected, f"Function Calling - 点击{action}后")
-                await asyncio.sleep(0.5)
 
-                new_state = await toggle_locator.get_attribute("aria-checked")
-                success = (new_state == "true") == should_enable
-                if success:
+                # Smart wait: wait for the attribute to change instead of fixed sleep
+                expected_state = "true" if should_enable else "false"
+                try:
+                    await expect_async(toggle_locator).to_have_attribute("aria-checked", expected_state, timeout=3000)
                     self.logger.info(f"[{self.req_id}] (FC) ✅ 成功{action}。")
-                else:
-                    self.logger.warning(f"[{self.req_id}] (FC) ⚠️ {action}失败。当前状态: '{new_state}'")
+                except Exception:
+                    new_state = await toggle_locator.get_attribute("aria-checked")
+                    self.logger.warning(f"[{self.req_id}] (FC) ⚠️ {action}验证超时。当前状态: '{new_state}'")
             else:
                 self.logger.info(f"[{self.req_id}] (FC) 状态已符合期望，无需操作。")
 
