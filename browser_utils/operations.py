@@ -839,6 +839,31 @@ async def get_response_via_function_card(page: AsyncPage, req_id: str) -> Option
     Returns a JSON list of tool calls if found.
     """
     try:
+        # --- Pre-Scrape Scroll: Ensure elements are rendered ---
+        # User reported that long messages require scrolling to be scraped.
+        # We try to scroll the last chat turn into view and also scroll the window.
+        try:
+            logger.info(f"[{req_id}] (FunctionScraper) Pre-scrape: Scrolling to bottom to ensure visibility...")
+
+            # Method 1: Scroll last chat turn into view
+            last_turn = page.locator("ms-chat-turn").last
+            if await last_turn.count() > 0:
+                await last_turn.scroll_into_view_if_needed(timeout=2000)
+
+            # Method 2: Force scroll to bottom of page
+            # This helps if the chat turn logic fails or if the container is the body
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+
+            # Give a brief moment for any lazy-loaded DOM elements (like function chunks) to appear
+            await asyncio.sleep(0.5)
+
+        except Exception as scroll_err:
+            # We log but don't fail, as the chunks might already be visible
+            logger.warning(
+                f"[{req_id}] (FunctionScraper) Pre-scrape scroll attempt encountered an issue (ignoring): {scroll_err}"
+            )
+        # -------------------------------------------------------
+
         # 1. Find ALL function call chunks on the page
         # Note: We assume history is cleared or we are only interested in the current page state.
         # If history is present, this might return old calls.
