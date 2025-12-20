@@ -184,6 +184,15 @@ SERVER_LOG_LEVEL=INFO
 
 首次运行需要进行 Google 账号认证，获取访问 AI Studio 所需的 Cookie。
 
+### 配置认证保存
+
+在 `.env` 文件中确保设置了自动保存认证：
+
+```env
+# [IMPORTANT] 必须设置为 true 才能保存认证配置文件！
+AUTO_SAVE_AUTH=true
+```
+
 ### 使用调试模式认证
 
 ```bash
@@ -196,13 +205,22 @@ poetry run python launch_camoufox.py --debug
 1. **浏览器窗口打开** - Camoufox 浏览器会自动打开
 2. **登录 Google 账号** - 在浏览器中登录您的 Google 账号
 3. **访问 AI Studio** - 浏览器会自动导航到 AI Studio 页面
-4. **等待保存** - 认证信息会自动保存到 `auth_profiles/active/` 目录
+4. **等待保存** - 认证信息会自动保存到 `auth_profiles/saved/` 目录
 5. **查看日志** - 终端会显示认证文件保存成功的消息
 
 **成功标志**:
 
 ```
-✅ 认证文件已保存到: auth_profiles/active/XXXXXXXX.json
+✅ 认证文件已保存到: auth_profiles/saved/XXXXXXXX.json
+```
+
+### 激活认证文件
+
+将保存的认证文件移动到 `active` 目录：
+
+```bash
+# 将认证文件从 saved 移到 active
+mv auth_profiles/saved/*.json auth_profiles/active/
 ```
 
 ### 关闭调试模式

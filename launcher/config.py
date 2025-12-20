@@ -31,7 +31,7 @@ ACTIVE_AUTH_DIR = os.path.join(AUTH_PROFILES_DIR, "active")
 SAVED_AUTH_DIR = os.path.join(AUTH_PROFILES_DIR, "saved")
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
 LAUNCHER_LOG_FILE_PATH = os.path.join(LOG_DIR, "launch_app.log")
-DIRECT_LAUNCH = os.environ.get("DIRECT_LAUNCH", False)
+DIRECT_LAUNCH = os.environ.get("DIRECT_LAUNCH", "").lower() in ("true", "1", "yes")
 
 # --- WebSocket 端点正则表达式 ---
 import re

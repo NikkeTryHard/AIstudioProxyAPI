@@ -108,6 +108,7 @@ SERVER_REDIRECT_PRINT=false
 
 ```env
 # 自动保存认证信息
+# [IMPORTANT] 必须在 debug 模式下设置为 true 才能保存新的认证配置文件！
 AUTO_SAVE_AUTH=false
 
 # 认证保存超时时间 (秒)
@@ -116,6 +117,8 @@ AUTH_SAVE_TIMEOUT=30
 # 仅收集当前用户消息中的附件（true/false）
 ONLY_COLLECT_CURRENT_USER_ATTACHMENTS=false
 ```
+
+> [!WARNING] > `AUTO_SAVE_AUTH=true` 是在 debug 模式下保存认证配置文件的必要条件。首次设置时请务必启用此选项。Headless 模式使用已保存的配置文件，此设置对其无效。
 
 ### 浏览器配置
 

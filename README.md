@@ -42,11 +42,12 @@ poetry install
 
 # 2️⃣ 配置环境
 cp .env.example .env
-nano .env  # 编辑配置（可选）
+nano .env  # 设置 AUTO_SAVE_AUTH=true 以保存认证
 
 # 3️⃣ 首次认证并启动
 poetry run python launch_camoufox.py --debug  # 首次认证（需登录 Google）
-# 认证成功后，Ctrl+C 停止，然后：
+# 认证成功后，将 auth_profiles/saved/*.json 移至 auth_profiles/active/
+# 然后：
 poetry run python launch_camoufox.py --headless
 ```
 

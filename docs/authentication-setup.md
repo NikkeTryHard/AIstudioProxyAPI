@@ -24,7 +24,12 @@ DEFAULT_FASTAPI_PORT=2048
 STREAM_PORT=0
 LAUNCH_MODE=normal
 DEBUG_LOGS_ENABLED=true
+
+# [IMPORTANT] 必须设置为 true 才能保存认证配置文件！
+AUTO_SAVE_AUTH=true
 ```
+
+> [!WARNING] > `AUTO_SAVE_AUTH=true` 是保存认证配置文件的必要条件。如果设置为 `false`（默认值），登录成功后将不会保存认证状态。
 
 ```bash
 # 简化启动命令 (推荐)

@@ -181,7 +181,10 @@
 - **类型**: 布尔值
 - **默认值**: `false`
 - **示例**: `AUTO_SAVE_AUTH=true`
-- **说明**: 启用后会自动保存 Google 认证 Cookie 到 `auth_profiles/` 目录
+- **说明**: 启用后会自动保存 Google 认证 Cookie 到 `auth_profiles/saved/` 目录
+
+> [!WARNING]
+> 必须在 **debug 模式** 下设置为 `true` 才能保存新的认证配置文件！Headless 模式使用已保存的配置文件，此设置对其无效。
 
 ### AUTH_SAVE_TIMEOUT
 
