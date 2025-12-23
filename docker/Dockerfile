@@ -1,6 +1,20 @@
 # Dockerfile
 
 #ARG PROXY_ADDR="http://host.docker.internal:7890" Linxux 下使用 host.docker.internal 可能会有问题，建议使用实际的代理地址
+
+# Stage 0: Build React Frontend
+FROM node:20-slim AS frontend-builder
+ARG PROXY_ADDR
+ENV HTTP_PROXY=${PROXY_ADDR}
+ENV HTTPS_PROXY=${PROXY_ADDR}
+
+WORKDIR /app_frontend
+COPY static/frontend/package.json static/frontend/package-lock.json ./
+RUN npm ci
+COPY static/frontend/ ./
+RUN npm run build
+
+# Stage 1: Build Python dependencies
 FROM python:3.10-slim-bookworm AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -63,6 +77,9 @@ COPY --from=builder /opt/poetry/bin/poetry /usr/local/bin/poetry
 
 # 复制应用代码
 COPY . .
+
+# 复制前端构建产物
+COPY --from=frontend-builder /app_frontend/dist /app/static/frontend/dist
 
 # 步骤 3: 现在 Python 模块已存在，可以安全地运行这些命令。
 # 注意：我们不再需要 `playwright install-deps`，因为依赖已在上面的 apt-get 中安装。
